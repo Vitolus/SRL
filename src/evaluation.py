@@ -351,8 +351,9 @@ def to_conll(actuals, predictions, srl_type, df, langs):
 
 
 # ---------------------------
-# Simple metric (replace with your own later)
+# Simple metrics
 # ---------------------------
+# TODO: check if correct, otherwise further modifications required (probably overall-semantics not ok)
 def prepare_compute_metrics(val_ds, srl_type, langs):
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
@@ -380,10 +381,12 @@ def prepare_compute_metrics(val_ds, srl_type, langs):
             gold_data = scorer_united_dep.read_file(os.path.join('results', f'{srl_type}_{langs_}_actuals.conll'))
             pred_data = scorer_united_dep.read_file(os.path.join('results', f'{srl_type}_{langs_}_predictions.conll'))
             metrics = scorer_united_dep.evaluate(gold_data, pred_data)
-        score = metrics['overall-semantics']['coarse-grained']['f1'] * 100
-        print(f'Overall coarse-F1: {score:.2f}')
+        f1 = metrics['overall-semantics']['coarse-grained']['f1'] * 100
+        precision = metrics['overall-semantics']['coarse-grained']['precision'] * 100
+        recall = metrics['overall-semantics']['coarse-grained']['recall'] * 100
+        print(f'Overall coarse-F1: {f1:.2f}, Precision: {precision:.2f}, Recall: {recall:.2f}')
 
-        #wandb.log({"SCORES": score})
+        #wandb.log({"SCORES": f1})
 
         final_df = pd.DataFrame(
             {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds, 'Actual Text': decoded_labels})
@@ -393,7 +396,7 @@ def prepare_compute_metrics(val_ds, srl_type, langs):
         wandb.log({"Generated text": tbl})
 
         exact = np.mean([p.strip() == r.strip() for p, r in zip(decoded_preds, decoded_labels)])
-        return {"exact_match": exact, "f1" : score}
+        return {"exact_match": exact, "f1": f1, "precision": precision, "recall": recall}
     return compute_metrics
 
 # ---------------------------
