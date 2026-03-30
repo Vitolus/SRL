@@ -353,7 +353,6 @@ def to_conll(actuals, predictions, srl_type, df, langs):
 # ---------------------------
 # Simple metrics
 # ---------------------------
-# TODO: check if correct, otherwise further modifications required (probably overall-semantics not ok)
 def prepare_compute_metrics(val_ds, srl_type, langs):
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
@@ -402,6 +401,7 @@ def prepare_compute_metrics(val_ds, srl_type, langs):
 # ---------------------------
 # Main
 # ---------------------------
+# TODO: change main (or duplicate and change in separate files) to use correct langs and data
 if __name__ == "__main__":
     checkpoint_dir = "./mbart_model/"
     all_results = []
