@@ -42,7 +42,7 @@ def get_VA_arg_struct():
 
 def get_tokenizer(tokenizer):
     frames = [k for k in get_VA_arg_struct()]
-    tokenizer.add_special_tokens(frames + va_roles)
+    tokenizer.add_special_tokens({'additional_special_tokens': frames + va_roles})
     return tokenizer
 
 def make_preprocess(tokenizer_, max_length=1024):
