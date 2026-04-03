@@ -1,15 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=speed5
+#SBATCH --job-name=mt0_finetune
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=quadro_rtx_5000:1
+#SBATCH --gres=gpu:tesla:4
 #SBATCH --ntasks=1
-#SBATCH --output=/home/rtripodi/python/langRep/speed5.out
-#SBATCH --error=/home/rtripodi/python/langRep/speed5.err
-#SBATCH --chdir=/home/rtripodi/python/langRep
+#SBATCH --cpus-per-task=16
+#SBATCH --output=/home/davide.vitagliano/SRL/mt0_train.out
+#SBATCH --error=/home/davide.vitagliano/SRL/mt0_train.err
+#SBATCH --chdir=/home/davide.vitagliano/SRL
 
-echo "SLURM_NODELIST $SLURM_NODELIST"
-eval "$(conda shell.bash hook)"
-
-srun /home/rtripodi/.conda/envs/langRep/bin/python /home/rtripodi/python/langRep/speed_2.py
+source /home/davide.vitagliano/miniforge3/etc/profile.d/conda.sh
+conda activate pytorch
+# TODO: setup cli arguments for the script and pass them here
+# Use torchrun to launch the script across all 4 GPUs natively
+srun torchrun --nproc_per_node=4 ./src/finetune_mt0.py --langs EN ZH --srl_type dependency
 
 exit
