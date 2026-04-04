@@ -3,6 +3,7 @@ from datasets import load_dataset, concatenate_datasets
 import os, gc, argparse
 import pandas as pd
 import torch
+from numba.cuda import fp16
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
@@ -70,17 +71,23 @@ def train_mT0(train_langs, srl_type):
         output_dir=f"eval_results/{run_name}",
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=4,  # This gets multiplied by your 4 GPUs automatically (Effective batch size = 16)
+        per_device_train_batch_size=1, # This gets multiplied by GPUs automatically
         per_device_eval_batch_size=8,
         predict_with_generate=True,
         generation_max_length=1024,
         logging_dir="logs",
         report_to=["wandb"],
-        run_name=run_name,  # This lets Trainer handle wandb safely across multiple GPUs
+        run_name=run_name, # This lets Trainer handle wandb safely across multiple GPUs
         num_train_epochs=3,
         save_total_limit=1,
         load_best_model_at_end=True,
-        ddp_find_unused_parameters=False  # Speeds up DDP training
+        ddp_find_unused_parameters=False, # Speeds up DDP training
+        fp16=True, # Use mixed precision
+        gradient_accumulation_steps=4, # Must be equal to train_batch_size, set 1 to that
+        # gradient_checkpointing=True, # Save memory at the cost of slower training
+        # --- ADD THESE TWO LINES FOR FSDP ---
+        # fsdp="full_shard auto_wrap",
+        # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
     compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer)
     trainer = Seq2SeqTrainer(
@@ -161,8 +168,8 @@ def evaluate_mT0(train_langs, srl_type):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="mT0 Fine-tuning for SRL")
     parser.add_argument("--action", type=str, required=True, choices=['train', 'eval'], help="Execution mode")
+    parser.add_argument("--srl-type", type=str, required=True, choices=['dependency', 'span'], help="Type of SRL task")
     parser.add_argument("--langs", nargs='+', required=True, help="List of languages (e.g., EN ZH)")
-    parser.add_argument("--srl_type", type=str, required=True, choices=['dependency', 'span'], help="Type of SRL task")
     args = parser.parse_args()
     print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs} ---")
     if args.action == 'train':
