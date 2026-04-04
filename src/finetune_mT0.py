@@ -3,7 +3,6 @@ from datasets import load_dataset, concatenate_datasets
 import os, gc, argparse
 import pandas as pd
 import torch
-from numba.cuda import fp16
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
@@ -21,9 +20,10 @@ if 'src' not in sys.path:
     sys.path.append('src')
 # --- GLOBAL CONFIGURATION ---
 MODEL_NAME = "bigscience/mt0-base"
-OUTPUT_DIR = "mT0_model/"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs('results', exist_ok=True)
+MODELS_DIR = "mt0_models/"
+RESULTS_DIR = "results/"
+os.makedirs(MODELS_DIR, exist_ok=True)
+os.makedirs(RESULTS_DIR, exist_ok=True)
 # Tell Hugging Face Trainer to use this WandB project automatically
 os.environ["WANDB_PROJECT"] = "mt0-srl-finetuning"
 
@@ -49,7 +49,7 @@ def train_mT0(train_langs, srl_type):
     model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
     model.resize_token_embeddings(len(tokenizer))
     train_name = "_".join(train_langs)
-    run_name = f"{srl_type}_{train_name}_mt0_finetune"
+    run_name = f"{srl_type}_{train_name}_mt0"
     # 3. Load Datasets for the train_langs
     train_datasets = []
     val_datasets = []
@@ -68,11 +68,11 @@ def train_mT0(train_langs, srl_type):
     val_ds = combined_val.map(preprocess, batched=True)
     # 4. Training Arguments
     training_args = Seq2SeqTrainingArguments(
-        output_dir=f"eval_results/{run_name}",
+        output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
         per_device_train_batch_size=1, # This gets multiplied by GPUs automatically
-        per_device_eval_batch_size=8,
+        per_device_eval_batch_size=2,
         predict_with_generate=True,
         generation_max_length=1024,
         logging_dir="logs",
@@ -103,7 +103,7 @@ def train_mT0(train_langs, srl_type):
     print(f"Starting training for {run_name}...")
     trainer.train()
     # Save best model
-    best_model_dir = os.path.join(OUTPUT_DIR, f"{train_name}_{srl_type}_mt0_best")
+    best_model_dir = os.path.join(MODELS_DIR, f"{run_name}_best")
     trainer.save_model(best_model_dir)
     tokenizer.save_pretrained(best_model_dir)
     del model, trainer
@@ -113,8 +113,8 @@ def train_mT0(train_langs, srl_type):
 
 def evaluate_mT0(train_langs, srl_type):
     train_name = "_".join(train_langs)
-    run_name = f"{srl_type}_{train_name}_mt0_finetune"
-    best_model_dir = os.path.join(OUTPUT_DIR, f"{train_name}_{srl_type}_mt0_best")
+    run_name = f"{srl_type}_{train_name}_mt0"
+    best_model_dir = os.path.join(MODELS_DIR, f"{run_name}_best")
     tokenizer = AutoTokenizer.from_pretrained(best_model_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(best_model_dir)
     preprocess = make_preprocess_mT0(tokenizer)
@@ -126,8 +126,8 @@ def evaluate_mT0(train_langs, srl_type):
         test_ds = raw_test["test"].map(preprocess, batched=True)
         compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
         eval_args = Seq2SeqTrainingArguments(
-            output_dir="eval_results/temp",
-            per_device_eval_batch_size=8,
+            output_dir=os.path.join(MODELS_DIR, "temp_eval"),
+            per_device_eval_batch_size=2,
             predict_with_generate=True,
             generation_max_length=1024,
             report_to=["wandb"],
@@ -157,7 +157,7 @@ def evaluate_mT0(train_langs, srl_type):
     # Only save on the main process to prevent multiple GPUs writing to the same file
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         df = pd.DataFrame(all_results)
-        results_path = f"results/mt0_FT_results_{run_name}.csv"
+        results_path = os.path.join(RESULTS_DIR, f"{run_name}_results.csv")
         df.to_csv(results_path, index=False)
         print(f"Evaluation completed. Results saved to {results_path}")
     del model, tokenizer
