@@ -42,7 +42,7 @@ def get_VA_arg_struct():
 
 def get_tokenizer(tokenizer):
     frames = [k for k in get_VA_arg_struct()]
-    tokenizer.add_special_tokens(frames + va_roles)
+    tokenizer.add_special_tokens({'additional_special_tokens': frames + va_roles})
     return tokenizer
 
 def make_preprocess(tokenizer_, max_length=1024):
@@ -353,7 +353,7 @@ def to_conll(actuals, predictions, srl_type, df, langs):
 # ---------------------------
 # Simple metrics
 # ---------------------------
-def prepare_compute_metrics(val_ds, srl_type, langs):
+def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer):
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
         if isinstance(predictions, tuple):
@@ -401,7 +401,6 @@ def prepare_compute_metrics(val_ds, srl_type, langs):
 # ---------------------------
 # Main
 # ---------------------------
-# TODO: change main (or duplicate and change in separate files) to use correct langs and data
 if __name__ == "__main__":
     checkpoint_dir = "./mbart_model/"
     all_results = []
@@ -441,7 +440,7 @@ if __name__ == "__main__":
                 preprocess = make_preprocess(tokenizer)
                 test_ds = raw_datasets["test"].map(preprocess, batched=True).shuffle(seed=42)
                 #test_ds = raw_datasets["test"].select(range(20)).map(preprocess, batched=True)
-                compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang])
+                compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
                 # Training arguments
                 args = Seq2SeqTrainingArguments(
                     output_dir="./eval_results",
