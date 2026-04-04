@@ -8,25 +8,27 @@
 #SBATCH --error=/home/davide.vitagliano/SRL/mt0_train.err
 #SBATCH --chdir=/home/davide.vitagliano/SRL
 
-# Ensure the user passed at least an SRL type and one language
-if [ -z "$1" ] || [ -z "$2" ]; then
+# Ensure the user passed an action, an SRL type, and at least one language
+if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
     echo "Error: Missing arguments."
-    echo "Usage: sbatch mt0_finetune.slurm <srl_type> <lang1> [lang2] [lang3] ..."
-    echo "Example: sbatch mt0_finetune.slurm dependency EN ZH"
+    echo "Usage: sbatch mt0_finetune.slurm <action> <srl_type> <lang1> [lang2] ..."
+    echo "Actions: train | eval"
+    echo "Example: sbatch mt0_finetune.slurm train dependency EN ZH"
     exit 1
 fi
 
-# Grab the first argument as the SRL type (e.g., "dependency" or "span")
-SRL_TYPE=$1
+ACTION=$1
+SRL_TYPE=$2
 
-# This deletes $1, making $2 the new $1, $3 the new $2, etc.
-shift
+# Shift twice to remove action and srl_type from the arguments list
+shift 2
 
 # Everything remaining ($@) is just your languages
 LANGS="$@"
 
 echo "========================================="
-echo "Starting Distributed Training Job"
+echo "Starting Distributed Job"
+echo "Action: $ACTION"
 echo "SRL Type: $SRL_TYPE"
 echo "Languages: $LANGS"
 echo "========================================="
@@ -35,6 +37,6 @@ source /home/davide.vitagliano/miniforge3/etc/profile.d/conda.sh
 conda activate pytorch
 
 # Use torchrun to launch the script across all 4 GPUs natively
-srun torchrun --nproc_per_node=4 ./src/finetune_mt0.py --langs $LANGS --srl_type $SRL_TYPE
+srun torchrun --nproc_per_node=4 ./src/finetune_mt0.py --action $ACTION --langs $LANGS --srl_type $SRL_TYPE
 
 exit

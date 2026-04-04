@@ -157,13 +157,15 @@ def evaluate_mT0(train_langs, srl_type):
     gc.collect()
     torch.cuda.empty_cache()
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="mT0 Fine-tuning for SRL")
-    parser.add_argument("--langs", nargs='+', required=True, help="List of languages to train on (e.g., EN ZH)")
+    parser.add_argument("--action", type=str, required=True, choices=['train', 'eval'], help="Execution mode")
+    parser.add_argument("--langs", nargs='+', required=True, help="List of languages (e.g., EN ZH)")
     parser.add_argument("--srl_type", type=str, required=True, choices=['dependency', 'span'], help="Type of SRL task")
-    parser.add_argument("--skip_eval", action="store_true", help="Skip evaluation step")
     args = parser.parse_args()
-    print(f"--- Starting Pipeline: {args.srl_type.upper()} SRL on {args.langs} ---")
-    train_mT0(args.langs, args.srl_type)
-    if not args.skip_eval:
+    print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs} ---")
+    if args.action == 'train':
+        train_mT0(args.langs, args.srl_type)
+    if args.action == 'eval':
         evaluate_mT0(args.langs, args.srl_type)
