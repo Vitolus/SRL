@@ -84,7 +84,7 @@ def train_mT0(train_langs, srl_type):
         ddp_find_unused_parameters=False, # Speeds up DDP training
         fp16=True, # Use mixed precision
         gradient_accumulation_steps=4, # Must be equal to train_batch_size, set 1 to that
-        # gradient_checkpointing=True, # Save memory at the cost of slower training
+        gradient_checkpointing=True, # Save memory at the cost of slower training
         # --- ADD THESE TWO LINES FOR FSDP ---
         # fsdp="full_shard auto_wrap",
         # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
