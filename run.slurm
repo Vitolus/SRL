@@ -4,8 +4,8 @@
 #SBATCH --gres=gpu:tesla:4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --output=/home/davide.vitagliano/SRL/mt0_train.out
-#SBATCH --error=/home/davide.vitagliano/SRL/mt0_train.err
+#SBATCH --output=/home/davide.vitagliano/SRL/mT0.out
+#SBATCH --error=/home/davide.vitagliano/SRL/mT0.err
 #SBATCH --chdir=/home/davide.vitagliano/SRL
 
 # Ensure the user passed an action, an SRL type, and at least one language
