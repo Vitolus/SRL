@@ -387,12 +387,14 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer):
 
         #wandb.log({"SCORES": f1})
 
-        final_df = pd.DataFrame(
-            {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds, 'Actual Text': decoded_labels})
-        final_df.to_csv(os.path.join('results', f"{srl_type}_{'_'.join(langs)}.tsv"), sep='\n')
-        print('Output Files generated for review')
-        tbl = wandb.Table(data=final_df)
-        wandb.log({"Generated text": tbl})
+        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            final_df = pd.DataFrame(
+                {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds, 'Actual Text': decoded_labels})
+            final_df.to_csv(os.path.join('results', f"{srl_type}_{'_'.join(langs)}.tsv"), sep='\n')
+            print('Output Files generated for review')
+            if wandb.run is not None:
+                tbl = wandb.Table(data=final_df)
+                wandb.log({"Generated text": tbl})
 
         exact = np.mean([p.strip() == r.strip() for p, r in zip(decoded_preds, decoded_labels)])
         return {"exact_match": exact, "f1": f1, "precision": precision, "recall": recall}

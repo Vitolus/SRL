@@ -12,7 +12,9 @@ from transformers import (
 )
 from evaluation import get_tokenizer, prepare_compute_metrics
 import sys
+import warnings
 
+warnings.filterwarnings("ignore", category=FutureWarning)
 # Change working directory to project root if running from src
 if os.path.basename(os.getcwd()) == 'src':
     os.chdir('..')
