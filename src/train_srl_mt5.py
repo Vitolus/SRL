@@ -81,8 +81,10 @@ def train_mt5(train_langs, srl_type):
     # 2. Load and merge datasets (Train + FT + Val)
     train_sets, ft_sets, val_sets = [], [], []
     for lang in train_langs:
-        train_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Train_{lang}.tsv", delimiter="\t")["train"])
-        ft_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_FT_{lang}.tsv", delimiter="\t")["train"])
+        if lang.endswith("-s"):
+            ft_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_FT_{lang[:-2]}.tsv", delimiter="\t")["train"])
+        else:
+            train_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Train_{lang}.tsv", delimiter="\t")["train"])
         val_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Val_{lang}.tsv", delimiter="\t")["train"])
     
     full_train_ds = concatenate_datasets(train_sets + ft_sets).shuffle(seed=42)
