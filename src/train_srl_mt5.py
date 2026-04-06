@@ -98,21 +98,22 @@ def train_mt5(train_langs, srl_type):
     output_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}")
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
-        learning_rate=5e-5,
-        num_train_epochs=5,
+        num_train_epochs=3,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         per_device_eval_batch_size=2,
-        fp16=True,
         gradient_checkpointing=True,
         ddp_find_unused_parameters=False,
         predict_with_generate=True, 
         load_best_model_at_end=True,
         report_to=["wandb"],
         run_name=run_name,
-        save_total_limit=1
+        save_total_limit=1,
+        # --- ADD THESE TWO LINES FOR FSDP ---
+        fsdp="full_shard auto_wrap",
+        fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
 
     trainer = Seq2SeqTrainer(
