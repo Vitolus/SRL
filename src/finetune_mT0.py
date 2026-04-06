@@ -86,7 +86,7 @@ def train_mT0(train_langs, srl_type):
         save_total_limit=1,
         load_best_model_at_end=True,
         ddp_find_unused_parameters=False, # Speeds up DDP training
-        fp16=True, # Use mixed precision
+        bf16=True, # Use mixed precision
         gradient_accumulation_steps=4, # Must be equal to train_batch_size, set 1 to that
         gradient_checkpointing=True, # Save memory at the cost of slower training
         # --- ADD THESE TWO LINES FOR FSDP ---
