@@ -16,7 +16,6 @@ import sys
 import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
-transformers.logging.set_verbosity_error()
 # Change working directory to project root if running from src
 if os.path.basename(os.getcwd()) == 'src':
     os.chdir('..')
@@ -86,12 +85,12 @@ def train_mT0(train_langs, srl_type):
         save_total_limit=1,
         load_best_model_at_end=True,
         ddp_find_unused_parameters=False, # Speeds up DDP training
-        bf16=True, # Use mixed precision
+        # fp16=True, # Use mixed precision
         gradient_accumulation_steps=4, # Must be equal to train_batch_size, set 1 to that
         gradient_checkpointing=True, # Save memory at the cost of slower training
         # --- ADD THESE TWO LINES FOR FSDP ---
-        # fsdp="full_shard auto_wrap",
-        # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
+        fsdp="full_shard auto_wrap",
+        fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
     compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer)
     trainer = Seq2SeqTrainer(
