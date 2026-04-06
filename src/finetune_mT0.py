@@ -3,6 +3,7 @@ from datasets import load_dataset, concatenate_datasets
 import os, gc, argparse
 import pandas as pd
 import torch
+import transformers
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
@@ -15,6 +16,7 @@ import sys
 import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
+transformers.logging.set_verbosity_error()
 # Change working directory to project root if running from src
 if os.path.basename(os.getcwd()) == 'src':
     os.chdir('..')
