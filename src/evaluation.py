@@ -370,34 +370,43 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer):
             np.where(labels != -100, labels, tokenizer.pad_token_id),
             skip_special_tokens=True,
         )
-        to_conll(decoded_labels, decoded_preds, srl_type, val_ds.to_pandas(), langs)
-        langs_ = '_'.join(langs)
-        if srl_type == "span":
-            gold_data = scorer_united_span.read_file(os.path.join('results', f'{srl_type}_{langs_}_actuals.conll'))
-            pred_data = scorer_united_span.read_file(os.path.join('results', f'{srl_type}_{langs_}_predictions.conll'))
-            metrics = scorer_united_span.evaluate(gold_data, pred_data)
-        else:
-            gold_data = scorer_united_dep.read_file(os.path.join('results', f'{srl_type}_{langs_}_actuals.conll'))
-            pred_data = scorer_united_dep.read_file(os.path.join('results', f'{srl_type}_{langs_}_predictions.conll'))
-            metrics = scorer_united_dep.evaluate(gold_data, pred_data)
-        f1 = metrics['overall-semantics']['coarse-grained']['f1'] * 100
-        precision = metrics['overall-semantics']['coarse-grained']['precision'] * 100
-        recall = metrics['overall-semantics']['coarse-grained']['recall'] * 100
-        print(f'Overall coarse-F1: {f1:.2f}, Precision: {precision:.2f}, Recall: {recall:.2f}')
+        # Calculate basic exact match on all GPUs
+        exact = np.mean([p.strip() == r.strip() for p, r in zip(decoded_preds, decoded_labels)])
+        result_metrics = {"exact_match": exact, "f1": 0.0, "precision": 0.0, "recall": 0.0}
+        # ONLY the Main GPU (Rank 0) performs file writing, heavy scoring, and WandB logging
+        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            to_conll(decoded_labels, decoded_preds, srl_type, val_ds.to_pandas(), langs)
+            langs_ = '_'.join(langs)
+            if srl_type == "span":
+                gold_data = scorer_united_span.read_file(os.path.join('results', f'{srl_type}_{langs_}_actuals.conll'))
+                pred_data = scorer_united_span.read_file(
+                    os.path.join('results', f'{srl_type}_{langs_}_predictions.conll'))
+                metrics = scorer_united_span.evaluate(gold_data, pred_data)
+            else:
+                gold_data = scorer_united_dep.read_file(os.path.join('results', f'{srl_type}_{langs_}_actuals.conll'))
+                pred_data = scorer_united_dep.read_file(
+                    os.path.join('results', f'{srl_type}_{langs_}_predictions.conll'))
+                metrics = scorer_united_dep.evaluate(gold_data, pred_data)
+            f1 = metrics['overall-semantics']['coarse-grained']['f1'] * 100
+            precision = metrics['overall-semantics']['coarse-grained']['precision'] * 100
+            recall = metrics['overall-semantics']['coarse-grained']['recall'] * 100
+            print(f'Overall coarse-F1: {f1:.2f}, Precision: {precision:.2f}, Recall: {recall:.2f}')
 
         #wandb.log({"SCORES": f1})
 
         if int(os.environ.get("LOCAL_RANK", "0")) == 0:
             final_df = pd.DataFrame(
-                {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds, 'Actual Text': decoded_labels})
+                {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds,
+                 'Actual Text': decoded_labels})
             final_df.to_csv(os.path.join('results', f"{srl_type}_{'_'.join(langs)}.tsv"), sep='\n')
             print('Output Files generated for review')
             if wandb.run is not None:
                 tbl = wandb.Table(data=final_df)
                 wandb.log({"Generated text": tbl})
 
-        exact = np.mean([p.strip() == r.strip() for p, r in zip(decoded_preds, decoded_labels)])
-        return {"exact_match": exact, "f1": f1, "precision": precision, "recall": recall}
+            # Update the return dictionary with actual scores for the Main GPU
+            result_metrics = {"exact_match": exact, "f1": f1, "precision": precision, "recall": recall}
+        return result_metrics
     return compute_metrics
 
 # ---------------------------
