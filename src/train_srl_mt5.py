@@ -124,9 +124,9 @@ if __name__ == "__main__":
                 fp16=True,
                 gradient_checkpointing=True,
                 ddp_find_unused_parameters=False,
-                # --- LARGE MODEL PARAMS (COMMENTED OUT) ---
-                # fsdp="full_shard auto_wrap",
-                # fsdp_transformer_layer_cls_to_wrap="MT5Block",
+                # --- LARGE MODEL PARAMS ---
+                fsdp="full_shard auto_wrap",
+                fsdp_transformer_layer_cls_to_wrap="MT5Block",
                 # --- LOGIC FIX: Don't generate text during validation since there's no metric function ---
                 predict_with_generate=False,
                 load_best_model_at_end=True,
