@@ -14,6 +14,7 @@ from transformers import (
     Seq2SeqTrainingArguments,
     Seq2SeqTrainer
 )
+from evaluation import get_tokenizer, prepare_compute_metrics
 
 # Silence the Hugging Face deprecation warnings during the multi-GPU progress bar
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -160,6 +161,7 @@ if __name__ == "__main__":
                 test_ds = load_dataset("csv", data_files=test_path, delimiter="\t")["train"]
                 test_data_processed = test_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
 
+                compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
                 # Create a temporary evaluator for safe DDP prediction gathering
                 eval_args = Seq2SeqTrainingArguments(
                     output_dir=f"{output_dir}/temp_eval",
@@ -173,7 +175,8 @@ if __name__ == "__main__":
                 evaluator = Seq2SeqTrainer(
                     model=model,
                     args=eval_args,
-                    data_collator=DataCollatorForSeq2Seq(tokenizer, model=model)
+                    data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
+                    compute_metrics=compute_metrics_test
                 )
 
                 # trainer.predict automatically handles the DDP sharding and gathering
