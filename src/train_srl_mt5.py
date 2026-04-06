@@ -106,7 +106,7 @@ def train_mt5(train_langs, srl_type):
         fp16=True,
         gradient_checkpointing=True,
         ddp_find_unused_parameters=False,
-        predict_with_generate=False, # No generation during training validation to save time
+        predict_with_generate=True, 
         load_best_model_at_end=True,
         report_to=["wandb"],
         run_name=run_name,
