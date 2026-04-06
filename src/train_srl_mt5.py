@@ -98,14 +98,13 @@ def train_mt5(train_langs, srl_type):
     output_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}")
     training_args = Seq2SeqTrainingArguments(
         output_dir=output_dir,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         learning_rate=5e-5,
         num_train_epochs=5,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         per_device_eval_batch_size=2,
-        fp16=True,
         gradient_checkpointing=True,
         ddp_find_unused_parameters=False,
         predict_with_generate=True, 
