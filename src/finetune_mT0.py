@@ -44,6 +44,80 @@ def make_preprocess_mT0(tokenizer_, max_length=1024):
         return model_inputs
     return preprocess_
 
+def tune_mt0(train_langs, srl_type):
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = get_tokenizer(tokenizer)
+    train_name = "_".join(train_langs)
+    run_name = f"{srl_type}_{train_name}_mt0_tuning"
+    train_datasets = []
+    val_datasets = []
+    for lang in train_langs:
+        data_files = {
+            "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
+            "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+        }
+        raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
+        train_datasets.append(raw_datasets["train"])
+        val_datasets.append(raw_datasets["val"])
+    combined_train = concatenate_datasets(train_datasets).shuffle(seed=42).select(range(1000))
+    combined_val = concatenate_datasets(val_datasets).shuffle(seed=42).select(range(200))
+    preprocess = make_preprocess_mT0(tokenizer)
+    train_ds = combined_train.map(preprocess, batched=True)
+    val_ds = combined_val.map(preprocess, batched=True)
+    compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer)
+
+    # Trainer needs a function to build a fresh model from scratch for EVERY trial
+    def model_init():
+        model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
+        model.resize_token_embeddings(len(tokenizer))
+        return model
+
+    def optuna_hp_space(trial):
+        return {
+            "learning_rate": trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True),
+            "warmup_ratio": trial.suggest_float("warmup_ratio", 0.0, 0.2),
+            "weight_decay": trial.suggest_float("weight_decay", 0.0, 0.1),
+            # Keep batch sizes strictly to what fits on your Tesla T4s
+            "per_device_train_batch_size": trial.suggest_categorical("per_device_train_batch_size", [1, 2]),
+            "gradient_accumulation_steps": trial.suggest_categorical("gradient_accumulation_steps", [2, 4, 8])
+        }
+
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        num_train_epochs=3,
+        predict_with_generate=True,
+        generation_max_length=1024,
+        report_to=["none"], # Turn off WandB so it doesn't flood your dashboard with trials
+        run_name=run_name,
+        gradient_checkpointing=True,
+        optim="adamw_bnb_8bit",
+    )
+    trainer = Seq2SeqTrainer(
+        model=None,
+        model_init=model_init,
+        args=training_args,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        processing_class=tokenizer,
+        data_collator=DataCollatorForSeq2Seq(tokenizer, model=None),
+        compute_metrics=compute_metrics_val
+    )
+
+    print(f"Launching Optuna Hyperparameter Search for {run_name}...")
+    best_run = trainer.hyperparameter_search(
+        direction="maximize",
+        backend="optuna",
+        hp_space=optuna_hp_space,
+        n_trials=10
+    )
+    print("\n" + "=" * 50)
+    print("Tuning Complete!")
+    print(f"Best Run ID: {best_run.run_id}")
+    print(f"Best Hyperparameters: {best_run.hyperparameters}")
+    print("=" * 50 + "\n")
+
 def train_mT0(train_langs, srl_type):
     # 1. Load tokenizer and get custom vocabulary (VA roles)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -81,6 +155,7 @@ def train_mT0(train_langs, srl_type):
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name, # This lets Trainer handle wandb safely across multiple GPUs
+        learning_rate=2e-4,
         num_train_epochs=3,
         save_total_limit=1,
         load_best_model_at_end=True,
@@ -173,12 +248,14 @@ def evaluate_mT0(train_langs, srl_type):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="mT0 Fine-tuning for SRL")
-    parser.add_argument("--action", type=str, required=True, choices=['train', 'eval'], help="Execution mode")
+    parser.add_argument("--action", type=str, required=True, choices=['train', 'eval', 'tune'], help="Execution mode")
     parser.add_argument("--srl-type", type=str, required=True, choices=['dependency', 'span'], help="Type of SRL task")
     parser.add_argument("--langs", nargs='+', required=True, help="List of languages (e.g., EN ZH)")
     args = parser.parse_args()
     print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs} ---")
     if args.action == 'train':
         train_mT0(args.langs, args.srl_type)
-    if args.action == 'eval':
+    elif args.action == 'eval':
         evaluate_mT0(args.langs, args.srl_type)
+    elif args.action == 'tune':
+        tune_mt0(args.langs, args.srl_type)
