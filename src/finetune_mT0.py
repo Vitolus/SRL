@@ -68,6 +68,8 @@ def tune_mt0(train_langs, srl_type):
 
     # Trainer needs a function to build a fresh model from scratch for EVERY trial
     def model_init():
+        gc.collect()
+        torch.cuda.empty_cache()
         model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
         model.resize_token_embeddings(len(tokenizer))
         return model
@@ -110,7 +112,7 @@ def tune_mt0(train_langs, srl_type):
         direction="maximize",
         backend="optuna",
         hp_space=optuna_hp_space,
-        n_trials=10
+        n_trials=5,
     )
     print("\n" + "=" * 50)
     print("Tuning Complete!")

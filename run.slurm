@@ -35,6 +35,9 @@ echo "========================================="
 source /home/davide.vitagliano/miniforge3/etc/profile.d/conda.sh
 conda activate pytorch
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+
 # Use torchrun to launch the script across all 4 GPUs natively
 srun torchrun --nproc_per_node=4 ./src/finetune_mT0.py --action $ACTION --srl-type $SRL_TYPE --langs $LANGS
 
