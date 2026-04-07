@@ -370,6 +370,10 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer):
             np.where(labels != -100, labels, tokenizer.pad_token_id),
             skip_special_tokens=True,
         )
+        # Slice off any duplicate items added by the 4-GPU distributed sampler
+        dataset_length = len(val_ds)
+        decoded_preds = decoded_preds[:dataset_length]
+        decoded_labels = decoded_labels[:dataset_length]
         # Calculate basic exact match on all GPUs
         exact = np.mean([p.strip() == r.strip() for p, r in zip(decoded_preds, decoded_labels)])
         result_metrics = {"exact_match": exact, "f1": 0.0, "precision": 0.0, "recall": 0.0}
