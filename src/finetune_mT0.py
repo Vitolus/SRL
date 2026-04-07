@@ -85,12 +85,12 @@ def train_mT0(train_langs, srl_type):
         save_total_limit=1,
         load_best_model_at_end=True,
         ddp_find_unused_parameters=False, # Speeds up DDP training
-        # fp16=True, # Use mixed precision
-        gradient_accumulation_steps=4, # Must be equal to train_batch_size, set 1 to that
-        gradient_checkpointing=True, # Save memory at the cost of slower training
+        optim="adamw_bnb_8bit",
+        gradient_accumulation_steps=4, # Must be equal to train_batch_size, set 1 to that if this is enabled
+        gradient_checkpointing=True, # Save memory at the cost of slower training, activate only if fsdp is commented out
         # --- ADD THESE TWO LINES FOR FSDP ---
-        fsdp="full_shard auto_wrap",
-        fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
+        # fsdp="full_shard auto_wrap",
+        # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
     compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer)
     trainer = Seq2SeqTrainer(
@@ -123,18 +123,21 @@ def evaluate_mT0(train_langs, srl_type):
     preprocess = make_preprocess_mT0(tokenizer)
     all_results = []
     # 6. Evaluation on ALL test languages
-    for test_lang in ['ZH', 'ES', 'EN', 'FR']:
+    for test_lang in ['EN', 'ZH', 'ES', 'FR']:
         test_data_files = {"test": f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"}
         raw_test = load_dataset("csv", data_files=test_data_files, delimiter="\t")
         test_ds = raw_test["test"].map(preprocess, batched=True)
         compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
         eval_args = Seq2SeqTrainingArguments(
             output_dir=os.path.join(MODELS_DIR, "temp_eval"),
-            per_device_eval_batch_size=2,
+            per_device_eval_batch_size=4,
             predict_with_generate=True,
             generation_max_length=1024,
             report_to=["wandb"],
-            run_name=f"{run_name}_eval_{test_lang}"
+            run_name=f"{run_name}_eval_{test_lang}",
+            # --- ADD THESE TWO LINES FOR FSDP ---
+            # fsdp="full_shard auto_wrap",
+            # fsdp_transformer_layer_cls_to_wrap="MT5Block",
         )
         evaluator = Seq2SeqTrainer(
             model=model,
