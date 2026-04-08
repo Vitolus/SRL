@@ -14,6 +14,7 @@ from transformers import (
 from evaluation import get_tokenizer, prepare_compute_metrics
 import sys
 import warnings
+import torch.distributed as dist
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 # Change working directory to project root if running from src
@@ -30,7 +31,7 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # Tell Hugging Face Trainer to use this WandB project automatically
 os.environ["WANDB_PROJECT"] = "mt0-srl-finetuning"
 
-def make_preprocess_mT0(tokenizer_, max_length=1024):
+def make_preprocess_mt0(tokenizer_, max_length=1024):
     def preprocess_(batch):
         model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
         for src, tgt in zip(batch["input"], batch["output"]):
@@ -61,7 +62,7 @@ def tune_mt0(train_langs, srl_type):
         val_datasets.append(raw_datasets["val"])
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42).select(range(1000))
     combined_val = concatenate_datasets(val_datasets).shuffle(seed=42).select(range(200))
-    preprocess = make_preprocess_mT0(tokenizer)
+    preprocess = make_preprocess_mt0(tokenizer)
     train_ds = combined_train.map(preprocess, batched=True)
     val_ds = combined_val.map(preprocess, batched=True)
     compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer)
@@ -120,7 +121,7 @@ def tune_mt0(train_langs, srl_type):
     print(f"Best Hyperparameters: {best_run.hyperparameters}")
     print("=" * 50 + "\n")
 
-def train_mT0(train_langs, srl_type):
+def train_mt0(train_langs, srl_type):
     # 1. Load tokenizer and get custom vocabulary (VA roles)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     tokenizer = get_tokenizer(tokenizer)
@@ -142,7 +143,7 @@ def train_mT0(train_langs, srl_type):
         val_datasets.append(raw_datasets["val"])
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
-    preprocess = make_preprocess_mT0(tokenizer)
+    preprocess = make_preprocess_mt0(tokenizer)
     train_ds = combined_train.map(preprocess, batched=True)
     val_ds = combined_val.map(preprocess, batched=True)
     # 4. Training Arguments
@@ -185,19 +186,22 @@ def train_mT0(train_langs, srl_type):
     # Save best model
     best_model_dir = os.path.join(MODELS_DIR, f"{run_name}_best")
     trainer.save_model(best_model_dir)
-    tokenizer.save_pretrained(best_model_dir)
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        tokenizer.save_pretrained(best_model_dir)
+    if dist.is_initialized():
+        dist.barrier()
     del model, trainer
     gc.collect()
     torch.cuda.empty_cache()
     return best_model_dir
 
-def evaluate_mT0(train_langs, srl_type):
+def evaluate_mt0(train_langs, srl_type):
     train_name = "_".join(train_langs)
     run_name = f"{srl_type}_{train_name}_mt0"
     best_model_dir = os.path.join(MODELS_DIR, f"{run_name}_best")
     tokenizer = AutoTokenizer.from_pretrained(best_model_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(best_model_dir)
-    preprocess = make_preprocess_mT0(tokenizer)
+    preprocess = make_preprocess_mt0(tokenizer)
     all_results = []
     # 6. Evaluation on ALL test languages
     for test_lang in ['EN', 'ZH', 'ES', 'FR']:
@@ -256,8 +260,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs} ---")
     if args.action == 'train':
-        train_mT0(args.langs, args.srl_type)
+        train_mt0(args.langs, args.srl_type)
     elif args.action == 'eval':
-        evaluate_mT0(args.langs, args.srl_type)
+        evaluate_mt0(args.langs, args.srl_type)
     elif args.action == 'tune':
         tune_mt0(args.langs, args.srl_type)
