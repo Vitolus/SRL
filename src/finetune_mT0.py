@@ -1,6 +1,6 @@
 import numpy as np
 from datasets import load_dataset, concatenate_datasets
-import os, gc, argparse
+import os, gc, argparse, json
 import pandas as pd
 import torch
 import transformers
@@ -120,6 +120,14 @@ def tune_mt0(train_langs, srl_type):
     print(f"Best Run ID: {best_run.run_id}")
     print(f"Best Hyperparameters: {best_run.hyperparameters}")
     print("=" * 50 + "\n")
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        base_run_name = f"{srl_type}_{train_name}_mt0"
+        run_results_dir = os.path.join(RESULTS_DIR, base_run_name)
+        os.makedirs(run_results_dir, exist_ok=True)
+        params_path = os.path.join(run_results_dir, f"{base_run_name}_best_params.json")
+        with open(params_path, "w") as f:
+            json.dump(best_run.hyperparameters, f, indent=4)
+        print(f"Saved best hyperparameters to {params_path}")
 
 def train_mt0(train_langs, srl_type):
     # 1. Load tokenizer and get custom vocabulary (VA roles)
@@ -146,25 +154,48 @@ def train_mt0(train_langs, srl_type):
     preprocess = make_preprocess_mt0(tokenizer)
     train_ds = combined_train.map(preprocess, batched=True)
     val_ds = combined_val.map(preprocess, batched=True)
+
+    lr = 2e-4
+    warmup_ratio = 0.0
+    weight_decay = 0.0
+    train_batch = 1
+    grad_accum = 4
+    run_results_dir = os.path.join(RESULTS_DIR, run_name)
+    params_path = os.path.join(run_results_dir, f"{run_name}_best_params.json")
+    if os.path.exists(params_path):
+        with open(params_path, "r") as f:
+            best_params = json.load(f)
+        print(f"\n--- Loaded best parameters from {params_path} ---")
+        print(json.dumps(best_params, indent=4))
+        lr = best_params.get("learning_rate", lr)
+        warmup_ratio = best_params.get("warmup_ratio", warmup_ratio)
+        weight_decay = best_params.get("weight_decay", weight_decay)
+        train_batch = best_params.get("per_device_train_batch_size", train_batch)
+        grad_accum = best_params.get("gradient_accumulation_steps", grad_accum)
+    else:
+        print(f"\nWARNING: {params_path} not found. Falling back to default parameters.")
+
     # 4. Training Arguments
     training_args = Seq2SeqTrainingArguments(
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=1, # This gets multiplied by GPUs automatically
+        per_device_train_batch_size=train_batch, # This gets multiplied by GPUs automatically
         per_device_eval_batch_size=2,
         predict_with_generate=True,
         generation_max_length=1024,
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name, # This lets Trainer handle wandb safely across multiple GPUs
-        learning_rate=2e-4,
+        learning_rate=lr,
+        warmup_ratio=warmup_ratio,
+        weight_decay=weight_decay,
         num_train_epochs=3,
         save_total_limit=1,
         load_best_model_at_end=True,
         ddp_find_unused_parameters=False, # Speeds up DDP training
         optim="adamw_bnb_8bit",
-        gradient_accumulation_steps=4, # Must be equal to train_batch_size, set 1 to that if this is enabled
+        gradient_accumulation_steps=grad_accum,
         gradient_checkpointing=True, # Save memory at the cost of slower training, activate only if fsdp is commented out
         # --- ADD THESE TWO LINES FOR FSDP ---
         # fsdp="full_shard auto_wrap",
@@ -244,7 +275,9 @@ def evaluate_mt0(train_langs, srl_type):
     # Only save on the main process to prevent multiple GPUs writing to the same file
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         df = pd.DataFrame(all_results)
-        results_path = os.path.join(RESULTS_DIR, f"{run_name}_results.csv")
+        run_results_dir = os.path.join(RESULTS_DIR, run_name)
+        os.makedirs(run_results_dir, exist_ok=True)
+        results_path = os.path.join(run_results_dir, f"{run_name}_results.csv")
         df.to_csv(results_path, index=False)
         print(f"Evaluation completed. Results saved to {results_path}")
     del model, tokenizer
