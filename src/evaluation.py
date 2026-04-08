@@ -364,16 +364,24 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer):
         #print([tokenizer.decode([k]) if k > 0 else k for k in predictions[0]])
         #decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
         print(tokenizer.decode(predictions[0]))
-        decoded_preds = [tokenizer.decode(prediction, skip_special_tokens=True) for prediction in predictions]
+        decoded_preds = [tokenizer.decode(prediction, skip_special_tokens=False) for prediction in predictions]
 
         decoded_labels = tokenizer.batch_decode(
             np.where(labels != -100, labels, tokenizer.pad_token_id),
-            skip_special_tokens=True,
+            skip_special_tokens=False,
         )
         # Slice off any duplicate items added by the 4-GPU distributed sampler
         dataset_length = len(val_ds)
-        decoded_preds = [normalize_tags(p) for p in decoded_preds[:dataset_length]]
-        decoded_labels = [normalize_tags(l) for l in decoded_labels[:dataset_length]]
+        decoded_preds = decoded_preds[:dataset_length]
+        decoded_labels = decoded_labels[:dataset_length]
+        # Strip the pad and eos tokens, but leave the AGENT/Frames alone
+        pad = tokenizer.pad_token
+        eos = tokenizer.eos_token
+        decoded_preds = [p.replace(pad, "").replace(eos, "").strip() for p in decoded_preds]
+        decoded_labels = [l.replace(pad, "").replace(eos, "").strip() for l in decoded_labels]
+        # Remove spaces in between role tags
+        decoded_preds = [normalize_tags(p) for p in decoded_preds]
+        decoded_labels = [normalize_tags(l) for l in decoded_labels]
         # Calculate basic exact match on all GPUs
         exact = np.mean([p.strip() == r.strip() for p, r in zip(decoded_preds, decoded_labels)])
         result_metrics = {"exact_match": exact, "f1": 0.0, "precision": 0.0, "recall": 0.0}
