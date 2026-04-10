@@ -65,7 +65,7 @@ def tune_mt0(train_langs, srl_type):
     preprocess = make_preprocess_mt0(tokenizer)
     train_ds = combined_train.map(preprocess, batched=True)
     val_ds = combined_val.map(preprocess, batched=True)
-    compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer)
+    compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer, run_name=f"{srl_type}_{train_name}_mt0")
 
     # Trainer needs a function to build a fresh model from scratch for EVERY trial
     def model_init():
@@ -88,7 +88,8 @@ def tune_mt0(train_langs, srl_type):
     training_args = Seq2SeqTrainingArguments(
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
-        save_strategy="epoch",
+        save_strategy="none",
+        per_device_eval_batch_size=2,
         num_train_epochs=3,
         predict_with_generate=True,
         generation_max_length=1024,
@@ -201,7 +202,7 @@ def train_mt0(train_langs, srl_type):
         # fsdp="full_shard auto_wrap",
         # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
-    compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer)
+    compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer, run_name=run_name)
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
@@ -239,7 +240,7 @@ def evaluate_mt0(train_langs, srl_type):
         test_data_files = {"test": f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"}
         raw_test = load_dataset("csv", data_files=test_data_files, delimiter="\t")
         test_ds = raw_test["test"].map(preprocess, batched=True)
-        compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
+        compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, run_name=run_name)
         eval_args = Seq2SeqTrainingArguments(
             output_dir=os.path.join(MODELS_DIR, "temp_eval"),
             per_device_eval_batch_size=4,

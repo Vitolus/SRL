@@ -319,9 +319,10 @@ def to_connl_file_dep(tokens, fw, united_id, doc_id, sent_id, domain="domain", p
     #    print('')
 
 
-def to_conll(actuals, predictions, srl_type, df, langs):
+def to_conll(actuals, predictions, srl_type, df, langs, run_dir='results'):
     langs_ = '_'.join(langs)
-    with open(os.path.join('results', f'{srl_type}_{langs_}_predictions.conll'), 'w') as fw, open(os.path.join('results', f'{srl_type}_{langs_}_actuals.conll'), 'w') as fw_actuals:
+    with (open(os.path.join(run_dir, f'{srl_type}_{langs_}_predictions.conll'), 'w') as fw,
+          open(os.path.join(run_dir, f'{srl_type}_{langs_}_actuals.conll'), 'w') as fw_actuals):
         if srl_type.startswith('dep'):
             for index, (id_, prediction) in enumerate(zip(df['id'], actuals)):
                 clean_prediction = clean_linearization_dep(prediction)
@@ -353,7 +354,7 @@ def to_conll(actuals, predictions, srl_type, df, langs):
 # ---------------------------
 # Simple metrics
 # ---------------------------
-def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer):
+def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer, run_name=None):
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
         if isinstance(predictions, tuple):
@@ -387,17 +388,18 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer):
         result_metrics = {"exact_match": exact, "f1": 0.0, "precision": 0.0, "recall": 0.0}
         # ONLY the Main GPU (Rank 0) performs file writing, heavy scoring, and WandB logging
         if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-            to_conll(decoded_labels, decoded_preds, srl_type, val_ds.to_pandas(), langs)
+            run_dir = os.path.join('results', run_name) if run_name else 'results'
+            os.makedirs(run_dir, exist_ok=True)
+
+            to_conll(decoded_labels, decoded_preds, srl_type, val_ds.to_pandas(), langs, run_dir)
             langs_ = '_'.join(langs)
             if srl_type == "span":
-                gold_data = scorer_united_span.read_file(os.path.join('results', f'{srl_type}_{langs_}_actuals.conll'))
-                pred_data = scorer_united_span.read_file(
-                    os.path.join('results', f'{srl_type}_{langs_}_predictions.conll'))
+                gold_data = scorer_united_span.read_file(os.path.join(run_dir, f'{srl_type}_{langs_}_actuals.conll'))
+                pred_data = scorer_united_span.read_file(os.path.join(run_dir, f'{srl_type}_{langs_}_predictions.conll'))
                 metrics = scorer_united_span.evaluate(gold_data, pred_data)
             else:
-                gold_data = scorer_united_dep.read_file(os.path.join('results', f'{srl_type}_{langs_}_actuals.conll'))
-                pred_data = scorer_united_dep.read_file(
-                    os.path.join('results', f'{srl_type}_{langs_}_predictions.conll'))
+                gold_data = scorer_united_dep.read_file(os.path.join(run_dir, f'{srl_type}_{langs_}_actuals.conll'))
+                pred_data = scorer_united_dep.read_file(os.path.join(run_dir, f'{srl_type}_{langs_}_predictions.conll'))
                 metrics = scorer_united_dep.evaluate(gold_data, pred_data)
             f1 = metrics['overall-semantics']['coarse-grained']['f1'] * 100
             precision = metrics['overall-semantics']['coarse-grained']['precision'] * 100
@@ -410,7 +412,7 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer):
             final_df = pd.DataFrame(
                 {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds,
                  'Actual Text': decoded_labels})
-            final_df.to_csv(os.path.join('results', f"{srl_type}_{'_'.join(langs)}.tsv"), sep='\n')
+            final_df.to_csv(os.path.join(run_dir, f"{srl_type}_{'_'.join(langs)}.tsv"), sep='\n')
             print('Output Files generated for review')
             if wandb.run is not None:
                 tbl = wandb.Table(data=final_df)
