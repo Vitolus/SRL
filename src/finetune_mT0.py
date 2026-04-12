@@ -88,7 +88,7 @@ def tune_mt0(train_langs, srl_type):
     training_args = Seq2SeqTrainingArguments(
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
-        save_strategy="none",
+        save_strategy="no",
         per_device_eval_batch_size=2,
         num_train_epochs=3,
         predict_with_generate=True,
