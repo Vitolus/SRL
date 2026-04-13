@@ -1,3 +1,4 @@
+#!/bin/bash
 #SBATCH --job-name=mt0_hypertune
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:tesla:1
