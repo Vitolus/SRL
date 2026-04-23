@@ -80,8 +80,8 @@ def tune_mt0(train_langs, srl_type):
             "learning_rate": trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True),
             "warmup_ratio": trial.suggest_float("warmup_ratio", 0.0, 0.2),
             "weight_decay": trial.suggest_float("weight_decay", 0.0, 0.1),
-            # Keep batch sizes strictly to what fits on your Tesla T4s
-            "per_device_train_batch_size": trial.suggest_categorical("per_device_train_batch_size", [1, 2]),
+            "num_train_epochs": trial.suggest_categorical("num_train_epochs", [3, 4, 5]),
+            "per_device_train_batch_size": trial.suggest_categorical("per_device_train_batch_size", [2, 4]),
             "gradient_accumulation_steps": trial.suggest_categorical("gradient_accumulation_steps", [2, 4, 8])
         }
 
@@ -89,8 +89,7 @@ def tune_mt0(train_langs, srl_type):
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="no",
-        per_device_eval_batch_size=2,
-        num_train_epochs=3,
+        per_device_eval_batch_size=4,
         predict_with_generate=True,
         generation_max_length=1024,
         report_to=["none"], # Turn off WandB so it doesn't flood your dashboard with trials
@@ -159,8 +158,9 @@ def train_mt0(train_langs, srl_type):
     lr = 2e-4
     warmup_ratio = 0.0
     weight_decay = 0.0
-    train_batch = 1
+    train_batch = 2
     grad_accum = 4
+    num_train_epochs = 3
     run_results_dir = os.path.join(RESULTS_DIR, run_name)
     params_path = os.path.join(run_results_dir, f"{run_name}_best_params.json")
     if os.path.exists(params_path):
@@ -173,6 +173,7 @@ def train_mt0(train_langs, srl_type):
         weight_decay = best_params.get("weight_decay", weight_decay)
         train_batch = best_params.get("per_device_train_batch_size", train_batch)
         grad_accum = best_params.get("gradient_accumulation_steps", grad_accum)
+        num_train_epochs = best_params.get("num_train_epochs", num_train_epochs)
     else:
         print(f"\nWARNING: {params_path} not found. Falling back to default parameters.")
 
@@ -191,7 +192,7 @@ def train_mt0(train_langs, srl_type):
         learning_rate=lr,
         warmup_ratio=warmup_ratio,
         weight_decay=weight_decay,
-        num_train_epochs=3,
+        num_train_epochs=num_train_epochs,
         save_total_limit=1,
         load_best_model_at_end=True,
         ddp_find_unused_parameters=False, # Speeds up DDP training
