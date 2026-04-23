@@ -81,7 +81,6 @@ def tune_mt0(train_langs, srl_type):
             "warmup_ratio": trial.suggest_float("warmup_ratio", 0.0, 0.2),
             "weight_decay": trial.suggest_float("weight_decay", 0.0, 0.1),
             "num_train_epochs": trial.suggest_categorical("num_train_epochs", [3, 4, 5]),
-            "per_device_train_batch_size": trial.suggest_categorical("per_device_train_batch_size", [2, 4]),
             "gradient_accumulation_steps": trial.suggest_categorical("gradient_accumulation_steps", [2, 4, 8])
         }
 
@@ -89,7 +88,8 @@ def tune_mt0(train_langs, srl_type):
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="no",
-        per_device_eval_batch_size=4,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
         predict_with_generate=True,
         generation_max_length=1024,
         report_to=["none"], # Turn off WandB so it doesn't flood your dashboard with trials
