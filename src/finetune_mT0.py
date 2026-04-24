@@ -263,7 +263,7 @@ def evaluate_mt0(train_langs, srl_type):
             compute_metrics=compute_metrics_test
         )
         print(f"Evaluating on {test_lang} test set...")
-        test_results = evaluator.evaluate()
+        test_results = evaluator.evaluate(metric_key_prefix=f"eval_{test_lang}")
         row = {
             "srl_type": srl_type,
             "train_lang": train_name,
@@ -274,11 +274,6 @@ def evaluate_mt0(train_langs, srl_type):
         del evaluator
         gc.collect()
         torch.cuda.empty_cache()
-        # Force the run to close so the next iteration starts a fresh one
-        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-            import wandb
-            if wandb.run is not None:
-                wandb.finish()
     # 7. Save final results
     # Only save on the main process to prevent multiple GPUs writing to the same file
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
