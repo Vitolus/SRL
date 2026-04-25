@@ -17,6 +17,8 @@ from transformers import (
 from evaluation import get_tokenizer, prepare_compute_metrics
 import torch.distributed as dist
 
+print(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+
 # Silence the Hugging Face deprecation warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -36,6 +38,7 @@ VA_ROLES = ["AGENT", "ASSET", "ATTRIBUTE", "BENEFICIARY", "CAUSE", "CO-AGENT", "
             "MATERIAL", "PATIENT", "PRODUCT", "PURPOSE", "RECIPIENT", "RESULT", "SOURCE",
             "STIMULUS", "THEME", "TIME", "TOPIC", "VALUE"]
 
+print("1 ")
 def get_special_tokens(verbatlas_path):
     """ Extracts frames and roles to create special tokens for the tokenizer """
     frames = []
@@ -55,18 +58,21 @@ def get_special_tokens(verbatlas_path):
             special_tags.append(f"</P{i}:{frame}>")
     return special_tags
 
+print("2 ")
 def preprocess_seq2seq(batch, tokenizer, max_len=1024):
     """ Standard mT5 tokenization for Seq2Seq """
     model_inputs = tokenizer(batch["input"], max_length=max_len, truncation=True, padding="max_length")
     with tokenizer.as_target_tokenizer():
         labels = tokenizer(batch["output"], max_length=max_len, truncation=True, padding="max_length")
 
+    
     # Ignore padding in loss calculation
     labels["input_ids"] = [[(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]]
     model_inputs["labels"] = labels["input_ids"]
     return model_inputs
 
 def train_mt5(train_langs, srl_type):
+    
     # 1. Setup Tokenizer and Model
     tokenizer = MT5Tokenizer.from_pretrained(MODEL_NAME)
     model = MT5ForConditionalGeneration.from_pretrained(MODEL_NAME)
@@ -75,26 +81,28 @@ def train_mt5(train_langs, srl_type):
     special_tokens = get_special_tokens(VERBATLAS_PATH)
     tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
     model.resize_token_embeddings(len(tokenizer))
-
+    print("3 ")
+    
     train_tag = "_".join(train_langs)
     run_name = f"{srl_type}_{train_tag}_mt5"
 
     # 2. Load and merge datasets (Train + FT + Val)
     train_sets, ft_sets, val_sets = [], [], []
+    print("4 ")
     for lang in train_langs:
         if lang.endswith("-s"):
             ft_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_FT_{lang[:-2]}.tsv", delimiter="\t")["train"])
         else:
             train_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Train_{lang}.tsv", delimiter="\t")["train"])
         val_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Val_{lang}.tsv", delimiter="\t")["train"])
-    
+    print("5 ")
     full_train_ds = concatenate_datasets(train_sets + ft_sets).shuffle(seed=42)
     full_val_ds = concatenate_datasets(val_sets)
-
+    print("6 ")
     # 3. Preprocess datasets
     train_data = full_train_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
     val_data = full_val_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
-
+    print("7 ")
     # 4. Training Arguments
     output_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}")
     training_args = Seq2SeqTrainingArguments(

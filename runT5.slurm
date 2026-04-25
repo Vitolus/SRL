@@ -4,9 +4,9 @@
 #SBATCH --gres=gpu:tesla:4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --output=/home/lorenzo.pastore/SRL/mT5.log
-#SBATCH --error=/home/lorenzo.pastore/SRL/mT5.err
-#SBATCH --chdir=/home/lorenzo.pastore/SRL
+#SBATCH --output=/home/lorenzo.pastore/mT5.log
+#SBATCH --error=/home/lorenzo.pastore/mT5.err
+#SBATCH --chdir=/home/lorenzo.pastore/
 
 # Ensure the user passed an action, an SRL type, and at least one language
 if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
@@ -37,6 +37,6 @@ source /home/lorenzo.pastore/miniforge3/etc/profile.d/conda.sh
 conda activate pytorch
 
 # Use torchrun to launch the script across all 4 GPUs natively
-srun torchrun --nproc_per_node=4 ./src/train_srl_mt5.py --action $ACTION --srl-type $SRL_TYPE --langs $LANGS
+srun torchrun --nproc_per_node=4 ./train_srl_mt5.py --action $ACTION --srl-type $SRL_TYPE --langs $LANGS
 
 exit
