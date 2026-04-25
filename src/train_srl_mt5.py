@@ -31,92 +31,48 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # Set WandB Project Globally
 os.environ["WANDB_PROJECT"] = "srl-mt5-project"
 
-VA_ROLES = ["AGENT", "ASSET", "ATTRIBUTE", "BENEFICIARY", "CAUSE", "CO-AGENT", "CO-PATIENT", "CO-THEME",
-            "DESTINATION", "EXPERIENCER", "EXTENT", "GOAL", "IDIOM", "INSTRUMENT", "LOCATION",
-            "MATERIAL", "PATIENT", "PRODUCT", "PURPOSE", "RECIPIENT", "RESULT", "SOURCE",
-            "STIMULUS", "THEME", "TIME", "TOPIC", "VALUE"]
-
-print("1 ")
-def get_special_tokens(verbatlas_path):
-    """ Extracts frames and roles to create special tokens for the tokenizer """
-    frames = []
-    if os.path.exists(verbatlas_path):
-        with open(verbatlas_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter='\t')
-            frames = [line[1].upper().strip() for line in reader if line and line[0] != '']
-
-    frames = list(set(frames))
-    special_tags = []
-    for i in range(10): # Support up to 10 predicates per sentence
-        for role in VA_ROLES:
-            special_tags.append(f"<P{i}:{role}>")
-            special_tags.append(f"</P{i}:{role}>")
-        for frame in frames:
-            special_tags.append(f"<P{i}:{frame}>")
-            special_tags.append(f"</P{i}:{frame}>")
-    return special_tags
-
-print("2 ")
-def preprocess_seq2seq(batch, tokenizer, max_len=1024):
-    """ Standard mT5 tokenization for Seq2Seq """
-    model_inputs = tokenizer(batch["input"], max_length=max_len, truncation=True, padding="max_length")
-    with tokenizer.as_target_tokenizer():
-        labels = tokenizer(batch["output"], max_length=max_len, truncation=True, padding="max_length")
-
-    
-    # Ignore padding in loss calculation
-    labels["input_ids"] = [[(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]]
-    model_inputs["labels"] = labels["input_ids"]
-    return model_inputs
-
-def make_preprocess_mt5(tokenizer, max_len=1024):
+def make_preprocess_mt5(tokenizer_, max_length=1024):
     def preprocess_(batch):
-        """ Standard mT5 tokenization for Seq2Seq """
-        model_inputs = tokenizer(batch["input"], max_length=max_len, truncation=True, padding="max_length")
-
-        # text_target avoids the deprecated context manager
-        labels = tokenizer(text_target=batch["output"], max_length=max_len, truncation=True, padding="max_length")
-
-        # Ignore padding in loss calculation
-        labels_ids = [[(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]]
-        model_inputs["labels"] = labels_ids
+        model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
+        for src, tgt in zip(batch["input"], batch["output"]):
+            encoded = tokenizer_(src, truncation=True, padding="max_length", max_length=max_length)
+            labels = tokenizer_(text_target=tgt, truncation=True, padding="max_length", max_length=max_length)
+            pad = tokenizer_.pad_token_id
+            labels_ids = [tok if tok != pad else -100 for tok in labels["input_ids"]]
+            model_inputs["input_ids"].append(encoded["input_ids"])
+            model_inputs["attention_mask"].append(encoded["attention_mask"])
+            model_inputs["labels"].append(labels_ids)
         return model_inputs
-
     return preprocess_
 
 def train_mt5(train_langs, srl_type):
-    
     # 1. Setup Tokenizer and Model
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-    
+
     # Add roles and frames as special tokens
-    special_tokens = get_special_tokens(VERBATLAS_PATH)
-    tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
+    tokenizer = get_tokenizer(tokenizer)
     model.resize_token_embeddings(len(tokenizer))
-    print("3 ")
     
     train_tag = "_".join(train_langs)
     run_name = f"{srl_type}_{train_tag}_mt5"
 
     # 2. Load and merge datasets (Train + FT + Val)
     train_sets, ft_sets, val_sets = [], [], []
-    print("4 ")
     for lang in train_langs:
         if lang.endswith("-s"):
             ft_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_FT_{lang[:-2]}.tsv", delimiter="\t")["train"])
         else:
             train_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Train_{lang}.tsv", delimiter="\t")["train"])
         val_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Val_{lang}.tsv", delimiter="\t")["train"])
-    print("5 ")
     full_train_ds = concatenate_datasets(train_sets + ft_sets).shuffle(seed=42)
     full_val_ds = concatenate_datasets(val_sets)
-    print("6 ")
     # 3. Preprocess datasets
+    print("START PREPROCESS")
     preprocess_fn = make_preprocess_mt5(tokenizer)
     train_data = full_train_ds.map(preprocess_fn, batched=True)
     val_data = full_val_ds.map(preprocess_fn, batched=True)
-    print("7 ")
+    print("FINISH PREPROCESS")
     # 4. Training Arguments
     output_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}")
     training_args = Seq2SeqTrainingArguments(
@@ -141,8 +97,9 @@ def train_mt5(train_langs, srl_type):
         # fsdp="full_shard auto_wrap",
         # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
-
+    print("START PREPARE METRICS")
     compute_metrics_val = prepare_compute_metrics(val_data, srl_type, train_langs, tokenizer, run_name=run_name)
+    print("FINISH PREPARE METRICS")
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
