@@ -71,6 +71,21 @@ def preprocess_seq2seq(batch, tokenizer, max_len=1024):
     model_inputs["labels"] = labels["input_ids"]
     return model_inputs
 
+def make_preprocess_mt5(tokenizer, max_len=1024):
+    def preprocess_(batch):
+        """ Standard mT5 tokenization for Seq2Seq """
+        model_inputs = tokenizer(batch["input"], max_length=max_len, truncation=True, padding="max_length")
+
+        # text_target avoids the deprecated context manager
+        labels = tokenizer(text_target=batch["output"], max_length=max_len, truncation=True, padding="max_length")
+
+        # Ignore padding in loss calculation
+        labels_ids = [[(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]]
+        model_inputs["labels"] = labels_ids
+        return model_inputs
+
+    return preprocess_
+
 def train_mt5(train_langs, srl_type):
     
     # 1. Setup Tokenizer and Model
@@ -100,9 +115,16 @@ def train_mt5(train_langs, srl_type):
     full_val_ds = concatenate_datasets(val_sets)
     print("6 ")
     # 3. Preprocess datasets
+<<<<<<< HEAD
     train_data = full_train_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
     val_data = full_val_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
     print("7 ")
+=======
+    preprocess_fn = make_preprocess_mt5(tokenizer)
+    train_data = full_train_ds.map(preprocess_fn, batched=True)
+    val_data = full_val_ds.map(preprocess_fn, batched=True)
+
+>>>>>>> b181baf4be884e1649b6b52e1e487f8da2b08193
     # 4. Training Arguments
     output_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}")
     training_args = Seq2SeqTrainingArguments(
@@ -183,7 +205,8 @@ def evaluate_mt5(train_langs, srl_type):
 
         print(f"Evaluating {run_name} on {test_lang}...")
         test_ds = load_dataset("csv", data_files=test_path, delimiter="\t")["train"]
-        test_data_processed = test_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
+        preprocess_fn = make_preprocess_mt5(tokenizer)
+        test_data_processed = test_ds.map(preprocess_fn, batched=True)
 
         compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, run_name=run_name)
         
