@@ -153,6 +153,10 @@ def evaluate_mt5(train_langs, srl_type):
     run_name = f"{srl_type}_{train_tag}_mt5"
     best_model_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}", "best")
     
+    # Crea una cartella specifica per la run: es. results/dependency_EN/
+    run_results_dir = os.path.join(RESULTS_DIR, f"{srl_type}_{train_tag}")
+    os.makedirs(run_results_dir, exist_ok=True)
+    
     if not os.path.exists(best_model_dir):
         raise FileNotFoundError(f"Model directory not found: {best_model_dir}")
 
