@@ -161,7 +161,7 @@ def train_mt0(train_langs, srl_type):
     weight_decay = 0.0
     train_batch = 2
     grad_accum = 4
-    num_train_epochs = 3
+    num_train_epochs = 4
     run_results_dir = os.path.join(RESULTS_DIR, run_name)
     params_path = os.path.join(run_results_dir, f"{run_name}_best_params.json")
     if os.path.exists(params_path):
