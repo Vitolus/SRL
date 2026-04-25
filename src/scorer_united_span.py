@@ -100,7 +100,7 @@ def read_file(path:str) -> dict:
             if line.startswith('#'):
                 # Parse metadata (which starts with #).
                 try:
-                    key, value = line.split(' = ')
+                    key, value = line.split(' = ', 1)
                 except:
                     logging.error(f'Error in line {line_no}: {line}')
                     logging.error(f'Line {line_no} is not a valid key-value pair (separated by " = "){tokens}')

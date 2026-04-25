@@ -114,7 +114,10 @@ def train_mt5(train_langs, srl_type):
         load_best_model_at_end=True,
         report_to=["wandb"],
         run_name=run_name,
-        save_total_limit=1
+        save_total_limit=1,
+        # --- ADD THESE TWO LINES FOR FSDP ---
+        fsdp="full_shard auto_wrap",
+        fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
 
     trainer = Seq2SeqTrainer(
