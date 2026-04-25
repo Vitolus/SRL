@@ -8,8 +8,8 @@ import numpy as np
 import warnings
 from datasets import load_dataset, concatenate_datasets
 from transformers import (
-    MT5Tokenizer,
-    MT5ForConditionalGeneration,
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
     DataCollatorForSeq2Seq,
     Seq2SeqTrainingArguments,
     Seq2SeqTrainer
@@ -87,8 +87,8 @@ def make_preprocess_mt5(tokenizer, max_len=1024):
 def train_mt5(train_langs, srl_type):
     
     # 1. Setup Tokenizer and Model
-    tokenizer = MT5Tokenizer.from_pretrained(MODEL_NAME)
-    model = MT5ForConditionalGeneration.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
     
     # Add roles and frames as special tokens
     special_tokens = get_special_tokens(VERBATLAS_PATH)
@@ -182,8 +182,8 @@ def evaluate_mt5(train_langs, srl_type):
     if not os.path.exists(best_model_dir):
         raise FileNotFoundError(f"Model directory not found: {best_model_dir}")
 
-    tokenizer = MT5Tokenizer.from_pretrained(best_model_dir)
-    model = MT5ForConditionalGeneration.from_pretrained(best_model_dir)
+    tokenizer = AutoTokenizer.from_pretrained(best_model_dir)
+    model = AutoModelForSeq2SeqLM.from_pretrained(best_model_dir)
     
     all_results = []
     test_langs = ["EN", "ZH", "ES", "FR"]
