@@ -68,11 +68,11 @@ def train_mt5(train_langs, srl_type):
     full_train_ds = concatenate_datasets(train_sets + ft_sets).shuffle(seed=42)
     full_val_ds = concatenate_datasets(val_sets)
     # 3. Preprocess datasets
-    print("START PREPROCESS")
+    print("START PREPROCESS", flush=True)
     preprocess_fn = make_preprocess_mt5(tokenizer)
     train_data = full_train_ds.map(preprocess_fn, batched=True)
     val_data = full_val_ds.map(preprocess_fn, batched=True)
-    print("FINISH PREPROCESS")
+    print("FINISH PREPROCESS", flush=True)
     # 4. Training Arguments
     output_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}")
     training_args = Seq2SeqTrainingArguments(
@@ -97,9 +97,9 @@ def train_mt5(train_langs, srl_type):
         # fsdp="full_shard auto_wrap",
         # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
-    print("START PREPARE METRICS")
+    print("START PREPARE METRICS", flush=True)
     compute_metrics_val = prepare_compute_metrics(val_data, srl_type, train_langs, tokenizer, run_name=run_name)
-    print("FINISH PREPARE METRICS")
+    print("FINISH PREPARE METRICS", flush=True)
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
@@ -111,7 +111,7 @@ def train_mt5(train_langs, srl_type):
     )
 
     # 5. Train
-    print(f"Starting training for {run_name}...")
+    print(f"Starting training for {run_name}...", flush=True)
     trainer.train()
 
     # Save best model
