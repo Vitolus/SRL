@@ -115,8 +115,9 @@ def train_mt5(train_langs, srl_type):
     full_val_ds = concatenate_datasets(val_sets)
     print("6 ")
     # 3. Preprocess datasets
-    train_data = full_train_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
-    val_data = full_val_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
+    preprocess_fn = make_preprocess_mt5(tokenizer)
+    train_data = full_train_ds.map(preprocess_fn, batched=True)
+    val_data = full_val_ds.map(preprocess_fn, batched=True)
     print("7 ")
     # 4. Training Arguments
     output_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}")
