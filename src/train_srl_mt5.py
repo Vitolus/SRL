@@ -17,8 +17,6 @@ from transformers import (
 from evaluation import get_tokenizer, prepare_compute_metrics
 import torch.distributed as dist
 
-print(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-
 # Silence the Hugging Face deprecation warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
