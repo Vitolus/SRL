@@ -15,6 +15,7 @@ from transformers import (
     Seq2SeqTrainer
 )
 from evaluation import get_tokenizer, prepare_compute_metrics
+import torch.distributed as dist
 
 # Silence the Hugging Face deprecation warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -102,30 +103,32 @@ def train_mt5(train_langs, srl_type):
         save_strategy="epoch",
         learning_rate=5e-5,
         num_train_epochs=5,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=8,
-        per_device_eval_batch_size=1,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        per_device_eval_batch_size=2,
         gradient_checkpointing=True,
-        predict_with_generate=True, 
-        fp16=torch.cuda.is_available(),
-        local_rank=int(os.environ.get("LOCAL_RANK", -1)),
-        deepspeed=None,
+        predict_with_generate=True,
         ddp_find_unused_parameters=False,
+        optim="adamw_bnb_8bit",
         load_best_model_at_end=True,
         report_to=["wandb"],
+        logging_dir="logs",
         run_name=run_name,
         save_total_limit=1,
         # --- ADD THESE TWO LINES FOR FSDP ---
-        fsdp="full_shard auto_wrap",
-        fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
+        # fsdp="full_shard auto_wrap",
+        # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
 
+    compute_metrics_val = prepare_compute_metrics(val_data, srl_type, train_langs, tokenizer, run_name=run_name)
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
         train_dataset=train_data,
         eval_dataset=val_data,
-        data_collator=DataCollatorForSeq2Seq(tokenizer, model=model)
+        processing_class=tokenizer,
+        data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
+        compute_metrics = compute_metrics_val
     )
 
     # 5. Train
@@ -135,7 +138,10 @@ def train_mt5(train_langs, srl_type):
     # Save best model
     best_model_dir = os.path.join(output_dir, "best")
     trainer.save_model(best_model_dir)
-    tokenizer.save_pretrained(best_model_dir)
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        tokenizer.save_pretrained(best_model_dir)
+    if dist.is_initialized():
+        dist.barrier()
     
     del model, trainer
     gc.collect()
