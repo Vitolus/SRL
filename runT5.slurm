@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=mt0_finetune
+#SBATCH --job-name=mt5_train
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:tesla:4
 #SBATCH --ntasks=1
@@ -11,7 +11,7 @@
 # Ensure the user passed an action, an SRL type, and at least one language
 if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
     echo "Error: Missing arguments."
-    echo "Usage: sbatch mt0_finetune.slurm <action> <srl_type> <lang1> [lang2] ..."
+    echo "Usage: sbatch mt5_train.slurm <action> <srl_type> <lang1> [lang2] ..."
     echo "Actions: train | eval"
     echo "Example: sbatch mt0_finetune.slurm train dependency EN ZH"
     exit 1
