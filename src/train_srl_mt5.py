@@ -15,6 +15,7 @@ from transformers import (
     Seq2SeqTrainer
 )
 from evaluation import get_tokenizer, prepare_compute_metrics
+import torch.distributed as dist
 
 # Silence the Hugging Face deprecation warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -100,28 +101,34 @@ def train_mt5(train_langs, srl_type):
         output_dir=output_dir,
         eval_strategy="epoch",
         save_strategy="epoch",
-        num_train_epochs=3,
-        per_device_train_batch_size=1,
+        learning_rate=5e-4,
+        num_train_epochs=4,
+        per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
         per_device_eval_batch_size=2,
         gradient_checkpointing=True,
+        predict_with_generate=True,
         ddp_find_unused_parameters=False,
-        predict_with_generate=True, 
+        optim="adamw_bnb_8bit",
         load_best_model_at_end=True,
         report_to=["wandb"],
+        logging_dir="logs",
         run_name=run_name,
         save_total_limit=1,
         # --- ADD THESE TWO LINES FOR FSDP ---
-        fsdp="full_shard auto_wrap",
-        fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
+        # fsdp="full_shard auto_wrap",
+        # fsdp_transformer_layer_cls_to_wrap="MT5Block", # Tells FSDP how to chop the model
     )
 
+    compute_metrics_val = prepare_compute_metrics(val_data, srl_type, train_langs, tokenizer, run_name=run_name)
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
         train_dataset=train_data,
         eval_dataset=val_data,
-        data_collator=DataCollatorForSeq2Seq(tokenizer, model=model)
+        processing_class=tokenizer,
+        data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
+        compute_metrics = compute_metrics_val
     )
 
     # 5. Train
@@ -131,7 +138,10 @@ def train_mt5(train_langs, srl_type):
     # Save best model
     best_model_dir = os.path.join(output_dir, "best")
     trainer.save_model(best_model_dir)
-    tokenizer.save_pretrained(best_model_dir)
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        tokenizer.save_pretrained(best_model_dir)
+    if dist.is_initialized():
+        dist.barrier()
     
     del model, trainer
     gc.collect()
@@ -142,6 +152,10 @@ def evaluate_mt5(train_langs, srl_type):
     train_tag = "_".join(train_langs)
     run_name = f"{srl_type}_{train_tag}_mt5"
     best_model_dir = os.path.join(MODELS_DIR, f"mt5_{srl_type}_{train_tag}", "best")
+    
+    # Crea una cartella specifica per la run: es. results/dependency_EN/
+    run_results_dir = os.path.join(RESULTS_DIR, f"{srl_type}_{train_tag}")
+    os.makedirs(run_results_dir, exist_ok=True)
     
     if not os.path.exists(best_model_dir):
         raise FileNotFoundError(f"Model directory not found: {best_model_dir}")
@@ -163,50 +177,53 @@ def evaluate_mt5(train_langs, srl_type):
         test_ds = load_dataset("csv", data_files=test_path, delimiter="\t")["train"]
         test_data_processed = test_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
 
-        compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
+        compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, run_name=run_name)
         
         eval_args = Seq2SeqTrainingArguments(
             output_dir=os.path.join(MODELS_DIR, "temp_eval"),
-            per_device_eval_batch_size=2,
+            per_device_eval_batch_size=4,
             predict_with_generate=True,
             generation_max_length=1024,
             report_to=["wandb"],
-            run_name=f"{run_name}_eval_{test_lang}"
+            run_name=f"{run_name}_eval_{test_lang}",
+            # --- ADD THESE TWO LINES FOR FSDP ---
+            # fsdp="full_shard auto_wrap",
+            # fsdp_transformer_layer_cls_to_wrap="MT5Block",
         )
 
         evaluator = Seq2SeqTrainer(
             model=model,
             args=eval_args,
+            eval_dataset=test_data_processed,
+            processing_class=tokenizer,
             data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
             compute_metrics=compute_metrics_test
         )
 
         # Generate predictions
-        predictions_output = evaluator.predict(test_data_processed)
-        preds = predictions_output.predictions
+        test_results = evaluator.evaluate(metric_key_prefix=f"eval_{test_lang}")
 
-        # Decode and Save Predictions
-        preds = np.where(preds != -100, preds, tokenizer.pad_token_id)
-        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
-        
-        pred_filename = os.path.join(RESULTS_DIR, f"preds_{srl_type}_{train_tag}_test_{test_lang}.tsv")
+        # preds = predictions_output.predictions
+        # # Decode and Save Predictions
+        # preds = np.where(preds != -100, preds, tokenizer.pad_token_id)
+        # decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+        # pred_filename = os.path.join(RESULTS_DIR, f"preds_{srl_type}_{train_tag}_test_{test_lang}.tsv")
 
-        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-            df_preds = pd.DataFrame({
-                "input": test_ds["input"],
-                "prediction": decoded_preds,
-                "output": test_ds["output"]
-            })
-            df_preds.to_csv(pred_filename, sep="\t", index=False)
+        # df_preds = pd.DataFrame({
+        #     "input": test_ds["input"],
+        #     "prediction": decoded_preds,
+        #     "output": test_ds["output"]
+        # })
+        # df_preds.to_csv(pred_filename, sep="\t", index=False)
 
-            row = {
-                "srl_type": srl_type,
-                "train_langs": train_tag,
-                "test_lang": test_lang,
-                "pred_file": pred_filename,
-                **predictions_output.metrics
-            }
-            all_results.append(row)
+        row = {
+            "srl_type": srl_type,
+            "train_langs": train_tag,
+            "test_lang": test_lang,
+            # "pred_file": pred_filename,
+            **test_results
+        }
+        all_results.append(row)
 
         del evaluator
         gc.collect()
@@ -214,7 +231,7 @@ def evaluate_mt5(train_langs, srl_type):
 
     # 7. Final summary
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        summary_path = os.path.join(RESULTS_DIR, f"{run_name}_summary.csv")
+        summary_path = os.path.join(run_results_dir, f"{run_name}_summary.csv")
         pd.DataFrame(all_results).to_csv(summary_path, index=False)
         print(f"Evaluation completed. Summary saved to {summary_path}")
 
