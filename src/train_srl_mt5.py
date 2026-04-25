@@ -58,15 +58,18 @@ def train_mt5(train_langs, srl_type):
     run_name = f"{srl_type}_{train_tag}_mt5"
 
     # 2. Load and merge datasets (Train + FT + Val)
-    train_sets, ft_sets, val_sets = [], [], []
+    train_datasets = []
+    val_datasets = []
     for lang in train_langs:
-        if lang.endswith("-s"):
-            ft_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_FT_{lang[:-2]}.tsv", delimiter="\t")["train"])
-        else:
-            train_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Train_{lang}.tsv", delimiter="\t")["train"])
-        val_sets.append(load_dataset("csv", data_files=f"data/linearizations_{srl_type}_Val_{lang}.tsv", delimiter="\t")["train"])
-    full_train_ds = concatenate_datasets(train_sets + ft_sets).shuffle(seed=42)
-    full_val_ds = concatenate_datasets(val_sets)
+        data_files = {
+            "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
+            "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+        }
+        raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
+        train_datasets.append(raw_datasets["train"])
+        val_datasets.append(raw_datasets["val"])
+    full_train_ds = concatenate_datasets(train_datasets).shuffle(seed=42)
+    full_val_ds = concatenate_datasets(val_datasets)
     # 3. Preprocess datasets
     print("START PREPROCESS", flush=True)
     preprocess_fn = make_preprocess_mt5(tokenizer)
