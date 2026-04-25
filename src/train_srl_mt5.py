@@ -177,50 +177,53 @@ def evaluate_mt5(train_langs, srl_type):
         test_ds = load_dataset("csv", data_files=test_path, delimiter="\t")["train"]
         test_data_processed = test_ds.map(lambda x: preprocess_seq2seq(x, tokenizer), batched=True)
 
-        compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
+        compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, run_name=run_name)
         
         eval_args = Seq2SeqTrainingArguments(
             output_dir=os.path.join(MODELS_DIR, "temp_eval"),
-            per_device_eval_batch_size=2,
+            per_device_eval_batch_size=4,
             predict_with_generate=True,
             generation_max_length=1024,
             report_to=["wandb"],
-            run_name=f"{run_name}_eval_{test_lang}"
+            run_name=f"{run_name}_eval_{test_lang}",
+            # --- ADD THESE TWO LINES FOR FSDP ---
+            # fsdp="full_shard auto_wrap",
+            # fsdp_transformer_layer_cls_to_wrap="MT5Block",
         )
 
         evaluator = Seq2SeqTrainer(
             model=model,
             args=eval_args,
+            eval_dataset=test_data_processed,
+            processing_class=tokenizer,
             data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
             compute_metrics=compute_metrics_test
         )
 
         # Generate predictions
-        predictions_output = evaluator.predict(test_data_processed)
-        preds = predictions_output.predictions
+        test_results = evaluator.evaluate(metric_key_prefix=f"eval_{test_lang}")
 
-        # Decode and Save Predictions
-        preds = np.where(preds != -100, preds, tokenizer.pad_token_id)
-        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
-        
-        pred_filename = os.path.join(RESULTS_DIR, f"preds_{srl_type}_{train_tag}_test_{test_lang}.tsv")
+        # preds = predictions_output.predictions
+        # # Decode and Save Predictions
+        # preds = np.where(preds != -100, preds, tokenizer.pad_token_id)
+        # decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+        # pred_filename = os.path.join(RESULTS_DIR, f"preds_{srl_type}_{train_tag}_test_{test_lang}.tsv")
 
-        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-            df_preds = pd.DataFrame({
-                "input": test_ds["input"],
-                "prediction": decoded_preds,
-                "output": test_ds["output"]
-            })
-            df_preds.to_csv(pred_filename, sep="\t", index=False)
+        # df_preds = pd.DataFrame({
+        #     "input": test_ds["input"],
+        #     "prediction": decoded_preds,
+        #     "output": test_ds["output"]
+        # })
+        # df_preds.to_csv(pred_filename, sep="\t", index=False)
 
-            row = {
-                "srl_type": srl_type,
-                "train_langs": train_tag,
-                "test_lang": test_lang,
-                "pred_file": pred_filename,
-                **predictions_output.metrics
-            }
-            all_results.append(row)
+        row = {
+            "srl_type": srl_type,
+            "train_langs": train_tag,
+            "test_lang": test_lang,
+            # "pred_file": pred_filename,
+            **test_results
+        }
+        all_results.append(row)
 
         del evaluator
         gc.collect()
@@ -228,7 +231,7 @@ def evaluate_mt5(train_langs, srl_type):
 
     # 7. Final summary
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        summary_path = os.path.join(RESULTS_DIR, f"{run_name}_summary.csv")
+        summary_path = os.path.join(run_results_dir, f"{run_name}_summary.csv")
         pd.DataFrame(all_results).to_csv(summary_path, index=False)
         print(f"Evaluation completed. Summary saved to {summary_path}")
 
