@@ -5,6 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --output=/home/lorenzo.pastore/SRL/mT5.log
+#SBATCH --error=/home/lorenzo.pastore/SRL/mT5.err
 #SBATCH --chdir=/home/lorenzo.pastore/SRL
 
 # Ensure the user passed an action, an SRL type, and at least one language
