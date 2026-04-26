@@ -87,6 +87,7 @@ def train_mt5(train_langs, srl_type):
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
         per_device_eval_batch_size=2,
+        generation_max_length=1024,
         gradient_checkpointing=True,
         predict_with_generate=True,
         ddp_find_unused_parameters=False,
