@@ -4,6 +4,7 @@ import gc
 import argparse
 import pandas as pd
 import torch
+import wandb
 import numpy as np
 import warnings
 from datasets import load_dataset, concatenate_datasets
@@ -48,10 +49,9 @@ def make_preprocess_mt5(tokenizer_, max_length=1024):
 def train_mt5(train_langs, srl_type):
     # 1. Setup Tokenizer and Model
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-
     # Add roles and frames as special tokens
     tokenizer = get_tokenizer(tokenizer)
+    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
     model.resize_token_embeddings(len(tokenizer))
     
     train_tag = "_".join(train_langs)
