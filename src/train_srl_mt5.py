@@ -46,6 +46,123 @@ def make_preprocess_mt5(tokenizer_, max_length=1024):
         return model_inputs
     return preprocess_
 
+
+def tune_mt5(train_langs, srl_type):
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = get_tokenizer(tokenizer)
+    
+    train_name = "_".join(train_langs)
+    run_name = f"{srl_type}_{train_name}_mt5_tuning"
+    
+    # 1. Load and merge datasets
+    # Subsampling to speed up the tuning process
+    train_datasets = []
+    val_datasets = []
+    for lang in train_langs:
+        data_files = {
+            "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
+            "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+        }
+        raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
+        train_datasets.append(raw_datasets["train"])
+        val_datasets.append(raw_datasets["val"])
+    
+    combined_train = concatenate_datasets(train_datasets).shuffle(seed=42).select(range(1000))
+    combined_val = concatenate_datasets(val_datasets).shuffle(seed=42).select(range(200))
+    
+    preprocess = make_preprocess_mt5(tokenizer)
+    train_ds = combined_train.map(preprocess, batched=True)
+    val_ds = combined_val.map(preprocess, batched=True)
+    
+    compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer, run_name=f"{srl_type}_{train_name}_mt0")
+
+    # 2. Model Init for Optuna
+    def model_init():
+        gc.collect()
+        torch.cuda.empty_cache()
+        model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
+        model.resize_token_embeddings(len(tokenizer))
+        return model
+
+    # 3. Hyperparameter Space
+    def optuna_hp_space(trial):
+        return {
+            "learning_rate": trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True),
+            "warmup_ratio": trial.suggest_float("warmup_ratio", 0.0, 0.2),
+            "weight_decay": trial.suggest_float("weight_decay", 0.0, 0.1),
+            "num_train_epochs": trial.suggest_categorical("num_train_epochs", [3, 4, 5]),
+            "gradient_accumulation_steps": trial.suggest_categorical("gradient_accumulation_steps", [2, 4, 8])
+        }
+
+    # 4. Training Arguments with DDP synchronization fixes
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
+        eval_strategy="epoch",
+        save_strategy="no",
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
+        predict_with_generate=True,
+        generation_max_length=1024,
+        report_to=["wandb"],
+        logging_dir="logs",
+        run_name=run_name,
+        gradient_checkpointing=True,
+        optim="adamw_bnb_8bit",
+        # Increase timeout to prevent NCCL flight recorder errors during long trials
+        ddp_timeout=3600, 
+    )
+
+    trainer = Seq2SeqTrainer(
+        model=None,
+        model_init=model_init,
+        args=training_args,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        processing_class=tokenizer,
+        data_collator=DataCollatorForSeq2Seq(tokenizer, model=None),
+        compute_metrics=compute_metrics_val
+    )
+
+    # Ensure all ranks are ready before starting the search
+    if dist.is_initialized():
+        dist.barrier()
+
+    print(f"Launching Optuna Hyperparameter Search for {run_name}...")
+    best_run = trainer.hyperparameter_search(
+        direction="maximize",
+        backend="optuna",
+        hp_space=optuna_hp_space,
+        n_trials=5,
+    )
+
+    # Sync ranks after the search is finished
+    if dist.is_initialized():
+        dist.barrier()
+
+    # 5. Save Results (Rank 0 only)
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        print("\n" + "=" * 50)
+        print("TUNING COMPLETE!")
+        print(f"Best Run ID: {best_run.run_id}")
+        print("Best Hyperparameters:")
+        for param, value in best_run.hyperparameters.items():
+            print(f"  - {param}: {value}")
+        print("=" * 50 + "\n")
+        
+        run_results_dir = os.path.join(RESULTS_DIR, f"{srl_type}_{train_name}")
+        os.makedirs(run_results_dir, exist_ok=True)
+        
+        # Saving as CSV as requested
+        params_df = pd.DataFrame([best_run.hyperparameters])
+        params_path = os.path.join(run_results_dir, f"{run_name}_best_params.csv")
+        params_df.to_csv(params_path, index=False)
+        print(f"Saved best hyperparameters to {params_path}")
+
+    # Final barrier to ensure Rank 0 finished writing before the script exits
+    if dist.is_initialized():
+        dist.barrier()
+        
+
 def train_mt5(train_langs, srl_type):
     # 1. Setup Tokenizer and Model
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -225,15 +342,17 @@ def evaluate_mt5(train_langs, srl_type):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="mT5 Fine-tuning for SRL")
-    parser.add_argument("--action", type=str, required=True, choices=['train', 'eval'], help="Execution mode")
+    parser.add_argument("--action", type=str, required=True, choices=['train', 'eval', 'tune'], help="Execution mode")
     parser.add_argument("--srl-type", type=str, required=True, choices=['dependency', 'span'], help="Type of SRL task")
     parser.add_argument("--langs", nargs='+', required=True, help="List of languages (e.g., EN ZH)")
     
     args = parser.parse_args()
     
     print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs} ---")
-    
+
     if args.action == 'train':
         train_mt5(args.langs, args.srl_type)
     elif args.action == 'eval':
         evaluate_mt5(args.langs, args.srl_type)
+    elif args.action == 'tune':
+        tune_mt5(args.langs, args.srl_type)
