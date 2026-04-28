@@ -186,7 +186,7 @@ def train_mt0(train_langs, srl_type):
         per_device_train_batch_size=train_batch, # This gets multiplied by GPUs automatically
         per_device_eval_batch_size=2,
         predict_with_generate=True,
-        generation_max_length=1024,
+        generation_max_length=1024, # TODO: set to 256
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name, # This lets Trainer handle wandb safely across multiple GPUs
@@ -197,7 +197,7 @@ def train_mt0(train_langs, srl_type):
         save_total_limit=1,
         load_best_model_at_end=True,
         ddp_find_unused_parameters=False, # Speeds up DDP training
-        optim="adamw_bnb_8bit",
+        optim="adamw_bnb_8bit", # TODO: try with adamw, on torch fp16
         gradient_accumulation_steps=grad_accum,
         gradient_checkpointing=True, # Save memory at the cost of slower training, activate only if fsdp is commented out
         # --- ADD THESE TWO LINES FOR FSDP ---
@@ -247,7 +247,7 @@ def evaluate_mt0(train_langs, srl_type):
             output_dir=os.path.join(MODELS_DIR, "temp_eval"),
             per_device_eval_batch_size=4,
             predict_with_generate=True,
-            generation_max_length=1024,
+            generation_max_length=1024, # TODO: set to 512 and fp16
             report_to=["wandb"],
             run_name=f"{run_name}_eval_{test_lang}",
             # --- ADD THESE TWO LINES FOR FSDP ---
