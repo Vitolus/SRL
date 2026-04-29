@@ -6,6 +6,10 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --output=/home/lorenzo.pastore/mT5.log
 #SBATCH --chdir=/home/lorenzo.pastore/
+#SBATCH --chdir=/home/lorenzo.pastore
+#SBATCH --output=/home/lorenzo.pastore/mT5.log
+#SBATCH --error=/home/lorenzo.pastore/mT5.err
+#SBATCH --chdir=/home/lorenzo.pastore
 
 # Ensure the user passed an action, an SRL type, and at least one language
 if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
