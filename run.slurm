@@ -10,9 +10,9 @@
 # Ensure the user passed a model, and action, an SRL type, and at least one language
 if [ -z "$1" ] || [ -z "$2" ]  || [ -z "$3" ] || [ -z "$4" ]; then
     echo "Error: Missing arguments."
-    echo "Usage: sbatch mt0_finetune.slurm <action> <srl_type> <lang1> [lang2] ..."
+    echo "Usage: sbatch mt0_finetune.slurm <model> <action> <srl_type> <lang1> [lang2] ..."
     echo "Actions: train | eval"
-    echo "Example: sbatch mt0_finetune.slurm train dependency EN ZH"
+    echo "Example: sbatch run.slurm mt5 train dependency EN ZH"
     exit 1
 fi
 

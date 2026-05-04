@@ -8,7 +8,7 @@
 #SBATCH --chdir=/home/davide.vitagliano/SRL
 
 # Ensure the user passed an SRL type and at least one language
-if [ -z "$1" ] || [ -z "$2" ] || [ -z "$2" ]; then
+if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
     echo "Error: Missing arguments."
     echo "Usage: sbatch run_hyper.slurm <model> <srl_type> <lang1> [lang2] ..."
     echo "Example: sbatch run_hyper.slurm mt5 dependency EN"
