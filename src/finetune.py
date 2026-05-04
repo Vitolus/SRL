@@ -45,12 +45,18 @@ def tune(train_langs, srl_type):
     train_datasets = []
     val_datasets = []
     for lang in train_langs:
-        data_files = {
-            "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
-            "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
-        }
-        if "-s" in lang:
-            data_files.update({"tune": f"data/linearizations_{srl_type}_FT_{lang}.tsv"})
+        if "-s" not in lang:
+            data_files = {
+                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
+                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+            }
+        else:
+            lang = lang.replace("-s", "")
+            data_files = {
+                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
+                "tune": f"data/linearizations_{srl_type}_FT_{lang}.tsv",
+                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+            }
         raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
         train_datasets.append(raw_datasets["train"])
         val_datasets.append(raw_datasets["val"])
@@ -139,12 +145,18 @@ def train(train_langs, srl_type):
     train_datasets = []
     val_datasets = []
     for lang in train_langs:
-        data_files = {
-            "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
-            "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
-        }
-        if "-s" in lang:
-            data_files.update({"tune": f"data/linearizations_{srl_type}_FT_{lang}.tsv"})
+        if "-s" not in lang:
+            data_files = {
+                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
+                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+            }
+        else:
+            lang = lang.replace("-s", "")
+            data_files = {
+                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
+                "tune": f"data/linearizations_{srl_type}_FT_{lang}.tsv",
+                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+            }
         raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
         train_datasets.append(raw_datasets["train"])
         val_datasets.append(raw_datasets["val"])
