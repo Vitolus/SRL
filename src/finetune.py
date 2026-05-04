@@ -80,14 +80,15 @@ def tune(train_langs, srl_type):
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="no",
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
+        fp16=True,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
         predict_with_generate=True,
-        generation_max_length=1024,
+        generation_max_length=256,
         report_to=["none"], # Turn off WandB so it doesn't flood your dashboard with trials
         run_name=run_name,
         gradient_checkpointing=True,
-        optim="adamw_bnb_8bit",
+        optim="adamw_torch",
     )
     trainer = Seq2SeqTrainer(
         model=None,
@@ -150,7 +151,6 @@ def train(train_langs, srl_type):
     lr = 2e-4
     warmup_ratio = 0.0
     weight_decay = 0.0
-    train_batch = 2
     grad_accum = 4
     num_train_epochs = 4
     run_results_dir = os.path.join(RESULTS_DIR, run_name)
@@ -163,7 +163,6 @@ def train(train_langs, srl_type):
         lr = best_params.get("learning_rate", lr)
         warmup_ratio = best_params.get("warmup_ratio", warmup_ratio)
         weight_decay = best_params.get("weight_decay", weight_decay)
-        train_batch = best_params.get("per_device_train_batch_size", train_batch)
         grad_accum = best_params.get("gradient_accumulation_steps", grad_accum)
         num_train_epochs = best_params.get("num_train_epochs", num_train_epochs)
     else:
@@ -174,10 +173,11 @@ def train(train_langs, srl_type):
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=train_batch, # This gets multiplied by GPUs automatically
-        per_device_eval_batch_size=2,
+        per_device_train_batch_size=4, # This gets multiplied by GPUs * accum step automatically
+        per_device_eval_batch_size=4,
+        fp16=True, # Use mixed precision for faster training and less memory usage, works well with 8-bit optimizers
         predict_with_generate=True,
-        generation_max_length=1024, # TODO: set to 256
+        generation_max_length=256, # warning, check if it suffice
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name, # This lets Trainer handle wandb safely across multiple GPUs
@@ -187,8 +187,8 @@ def train(train_langs, srl_type):
         num_train_epochs=num_train_epochs,
         save_total_limit=1,
         load_best_model_at_end=True,
-        ddp_find_unused_parameters=False, # Speeds up DDP training
-        optim="adamw_bnb_8bit", # TODO: try with adamw, on torch fp16
+        ddp_find_unused_parameters=False, # False speeds up DDP training
+        optim="adamw_torch", # bed and breakfast is better
         gradient_accumulation_steps=grad_accum,
         gradient_checkpointing=True, # Save memory at the cost of slower training, activate only if fsdp is commented out
         # --- ADD THESE TWO LINES FOR FSDP ---
@@ -236,9 +236,10 @@ def evaluate(train_langs, srl_type):
         compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, run_name=run_name)
         eval_args = Seq2SeqTrainingArguments(
             output_dir=os.path.join(MODELS_DIR, "temp_eval"),
-            per_device_eval_batch_size=4,
+            per_device_eval_batch_size=8,
+            fp16=True,
             predict_with_generate=True,
-            generation_max_length=1024, # TODO: set to 512 and fp16
+            generation_max_length=256,
             report_to=["wandb"],
             run_name=f"{run_name}_eval_{test_lang}",
             # --- ADD THESE TWO LINES FOR FSDP ---
