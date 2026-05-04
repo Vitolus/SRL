@@ -1,10 +1,7 @@
-import numpy as np
-import wandb
 from datasets import load_dataset, concatenate_datasets
 import os, gc, argparse, json
 import pandas as pd
 import torch
-import transformers
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
@@ -23,16 +20,10 @@ if os.path.basename(os.getcwd()) == 'src':
     os.chdir('..')
 if 'src' not in sys.path:
     sys.path.append('src')
-# --- GLOBAL CONFIGURATION ---
-MODEL_NAME = "bigscience/mt0-base"
-MODELS_DIR = "mt0_models/"
-RESULTS_DIR = "results/"
-os.makedirs(MODELS_DIR, exist_ok=True)
-os.makedirs(RESULTS_DIR, exist_ok=True)
 # Tell Hugging Face Trainer to use this WandB project automatically
 os.environ["WANDB_PROJECT"] = "mt0-srl-finetuning"
 
-def make_preprocess_mt0(tokenizer_, max_length=1024):
+def make_preprocess(tokenizer_, max_length=1024):
     def preprocess_(batch):
         model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
         for src, tgt in zip(batch["input"], batch["output"]):
@@ -46,11 +37,11 @@ def make_preprocess_mt0(tokenizer_, max_length=1024):
         return model_inputs
     return preprocess_
 
-def tune_mt0(train_langs, srl_type):
+def tune(train_langs, srl_type):
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     tokenizer = get_tokenizer(tokenizer)
     train_name = "_".join(train_langs)
-    run_name = f"{srl_type}_{train_name}_mt0_tuning"
+    run_name = f"{srl_type}_{train_name}_tuning"
     train_datasets = []
     val_datasets = []
     for lang in train_langs:
@@ -63,10 +54,10 @@ def tune_mt0(train_langs, srl_type):
         val_datasets.append(raw_datasets["val"])
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42).select(range(1000))
     combined_val = concatenate_datasets(val_datasets).shuffle(seed=42).select(range(200))
-    preprocess = make_preprocess_mt0(tokenizer)
+    preprocess = make_preprocess(tokenizer)
     train_ds = combined_train.map(preprocess, batched=True)
     val_ds = combined_val.map(preprocess, batched=True)
-    compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer, run_name=f"{srl_type}_{train_name}_mt0")
+    compute_metrics_val = prepare_compute_metrics(val_ds, srl_type, train_langs, tokenizer, run_name=f"{srl_type}_{train_name}_{args.model}")
 
     # Trainer needs a function to build a fresh model from scratch for EVERY trial
     def model_init():
@@ -122,7 +113,7 @@ def tune_mt0(train_langs, srl_type):
     print(f"Best Hyperparameters: {best_run.hyperparameters}")
     print("=" * 50 + "\n")
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        base_run_name = f"{srl_type}_{train_name}_mt0"
+        base_run_name = f"{srl_type}_{train_name}_{args.model}"
         run_results_dir = os.path.join(RESULTS_DIR, base_run_name)
         os.makedirs(run_results_dir, exist_ok=True)
         params_path = os.path.join(run_results_dir, f"{base_run_name}_best_params.json")
@@ -130,7 +121,7 @@ def tune_mt0(train_langs, srl_type):
             json.dump(best_run.hyperparameters, f, indent=4)
         print(f"Saved best hyperparameters to {params_path}")
 
-def train_mt0(train_langs, srl_type):
+def train(train_langs, srl_type):
     # 1. Load tokenizer and get custom vocabulary (VA roles)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     tokenizer = get_tokenizer(tokenizer)
@@ -138,7 +129,7 @@ def train_mt0(train_langs, srl_type):
     model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
     model.resize_token_embeddings(len(tokenizer))
     train_name = "_".join(train_langs)
-    run_name = f"{srl_type}_{train_name}_mt0"
+    run_name = f"{srl_type}_{train_name}_{args.model}"
     # 3. Load Datasets for the train_langs
     train_datasets = []
     val_datasets = []
@@ -152,7 +143,7 @@ def train_mt0(train_langs, srl_type):
         val_datasets.append(raw_datasets["val"])
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
-    preprocess = make_preprocess_mt0(tokenizer)
+    preprocess = make_preprocess(tokenizer)
     train_ds = combined_train.map(preprocess, batched=True)
     val_ds = combined_val.map(preprocess, batched=True)
 
@@ -229,13 +220,13 @@ def train_mt0(train_langs, srl_type):
     torch.cuda.empty_cache()
     return best_model_dir
 
-def evaluate_mt0(train_langs, srl_type):
+def evaluate(train_langs, srl_type):
     train_name = "_".join(train_langs)
-    run_name = f"{srl_type}_{train_name}_mt0"
+    run_name = f"{srl_type}_{train_name}_{args.model}"
     best_model_dir = os.path.join(MODELS_DIR, f"{run_name}_best")
     tokenizer = AutoTokenizer.from_pretrained(best_model_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(best_model_dir)
-    preprocess = make_preprocess_mt0(tokenizer)
+    preprocess = make_preprocess(tokenizer)
     all_results = []
     # 6. Evaluation on ALL test languages
     for test_lang in ['EN', 'ZH', 'ES', 'FR']:
@@ -290,14 +281,23 @@ def evaluate_mt0(train_langs, srl_type):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="mT0 Fine-tuning for SRL")
+    parser.add_argument("--model", type=str, required=True, choices=["mt0", "mt5"], help="Model name")
     parser.add_argument("--action", type=str, required=True, choices=['train', 'eval', 'tune'], help="Execution mode")
     parser.add_argument("--srl-type", type=str, required=True, choices=['dependency', 'span'], help="Type of SRL task")
     parser.add_argument("--langs", nargs='+', required=True, help="List of languages (e.g., EN ZH)")
     args = parser.parse_args()
+    if args.model == 'mt5':
+        MODEL_NAME = "google/mt5-base"
+    else:
+        MODEL_NAME = "bigscience/mt0-base"
+    MODELS_DIR = f"{args.model}_models/"
+    RESULTS_DIR = "results/"
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
     print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs} ---")
     if args.action == 'train':
-        train_mt0(args.langs, args.srl_type)
+        train(args.langs, args.srl_type)
     elif args.action == 'eval':
-        evaluate_mt0(args.langs, args.srl_type)
+        evaluate(args.langs, args.srl_type)
     elif args.action == 'tune':
-        tune_mt0(args.langs, args.srl_type)
+        tune(args.langs, args.srl_type)
