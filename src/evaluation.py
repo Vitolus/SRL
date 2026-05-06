@@ -366,7 +366,6 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer, run_name=None):
         #decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
         print(tokenizer.decode(predictions[0]))
         decoded_preds = [tokenizer.decode(prediction, skip_special_tokens=False) for prediction in predictions]
-
         decoded_labels = tokenizer.batch_decode(
             np.where(labels != -100, labels, tokenizer.pad_token_id),
             skip_special_tokens=False,
@@ -407,7 +406,6 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer, run_name=None):
             print(f'Overall coarse-F1: {f1:.2f}, Precision: {precision:.2f}, Recall: {recall:.2f}')
 
         #wandb.log({"SCORES": f1})
-
         if int(os.environ.get("LOCAL_RANK", "0")) == 0:
             final_df = pd.DataFrame(
                 {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds,
