@@ -13,6 +13,7 @@ from evaluation import get_tokenizer, prepare_compute_metrics
 import sys
 import warnings
 import torch.distributed as dist
+import wandb
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 # Change working directory to project root if running from src
@@ -21,9 +22,10 @@ if os.path.basename(os.getcwd()) == 'src':
 if 'src' not in sys.path:
     sys.path.append('src')
 # Tell Hugging Face Trainer to use this WandB project automatically
-os.environ["WANDB_PROJECT"] = "mt0-srl-finetuning"
+# TODO: change to correct project name
+os.environ["WANDB_PROJECT"] = "srl-tests"
 
-def make_preprocess(tokenizer_, max_length=1024):
+def make_preprocess(tokenizer_, max_length=256):
     def preprocess_(batch):
         model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
         for src, tgt in zip(batch["input"], batch["output"]):
@@ -90,15 +92,14 @@ def tune(train_langs, srl_type):
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="no",
-        fp16=True,
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=4,
+        per_device_train_batch_size=8,
+        per_device_eval_batch_size=6,
         predict_with_generate=True,
         generation_max_length=256,
         report_to=["none"], # Turn off WandB so it doesn't flood your dashboard with trials
         run_name=run_name,
         gradient_checkpointing=True,
-        optim="adamw_torch",
+        optim="adamw_bnb_8bit",
     )
     trainer = Seq2SeqTrainer(
         model=None,
@@ -193,11 +194,11 @@ def train(train_langs, srl_type):
         output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=4, # This gets multiplied by GPUs * accum step automatically
-        per_device_eval_batch_size=4,
-        fp16=True, # Use mixed precision for faster training and less memory usage, works well with 8-bit optimizers
+        # TODO: if using adamw_torch set per_device_train_batch_size to 6, if using adamw_bnb_8bit set it to 8
+        per_device_train_batch_size=6, # This gets multiplied by GPUs * accum step automatically
+        per_device_eval_batch_size=6,
         predict_with_generate=True,
-        generation_max_length=256, # warning, check if it suffice
+        generation_max_length=256,
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name, # This lets Trainer handle wandb safely across multiple GPUs
@@ -256,8 +257,7 @@ def evaluate(train_langs, srl_type):
         compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, run_name=run_name)
         eval_args = Seq2SeqTrainingArguments(
             output_dir=os.path.join(MODELS_DIR, "temp_eval"),
-            per_device_eval_batch_size=8,
-            fp16=True,
+            per_device_eval_batch_size=6,
             predict_with_generate=True,
             generation_max_length=256,
             report_to=["wandb"],
@@ -275,7 +275,7 @@ def evaluate(train_langs, srl_type):
             compute_metrics=compute_metrics_test
         )
         print(f"Evaluating on {test_lang} test set...")
-        test_results = evaluator.evaluate(metric_key_prefix=f"eval_{test_lang}")
+        test_results = evaluator.evaluate(metric_key_prefix=f"eval")
         row = {
             "srl_type": srl_type,
             "train_lang": train_name,
@@ -286,6 +286,7 @@ def evaluate(train_langs, srl_type):
         del evaluator
         gc.collect()
         torch.cuda.empty_cache()
+        wandb.finish()
     # 7. Save final results
     # Only save on the main process to prevent multiple GPUs writing to the same file
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
