@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:tesla:1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --output=/home/davide.vitagliano/SRL/hypertune.log
+#SBATCH --cpus-per-task=6
+#SBATCH --output=/home/davide.vitagliano/SRL/hypertune_%j.log
 #SBATCH --chdir=/home/davide.vitagliano/SRL
 
 # Ensure the user passed an SRL type and at least one language
@@ -17,6 +17,8 @@ fi
 
 MODEL=$1
 SRL_TYPE=$2
+MASTER_PORT=$(shuf -i 29501-29700 -n 1)
+NUM_GPUS=$SLURM_GPUS_ON_NODE
 
 # Shift twice to remove model and srl_type from the arguments list
 shift 2
@@ -39,6 +41,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Use standard python execution for a single GPU
-python ./src/finetune.py --model $MODEL --action tune --srl-type $SRL_TYPE --langs $LANGS
+torchrun --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT ./src/finetune.py --model $MODEL --action tune --srl-type $SRL_TYPE --langs $LANGS
 
 exit

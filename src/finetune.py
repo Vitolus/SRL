@@ -23,7 +23,7 @@ if 'src' not in sys.path:
     sys.path.append('src')
 # Tell Hugging Face Trainer to use this WandB project automatically
 # TODO: change to correct project name
-os.environ["WANDB_PROJECT"] = "srl-tests"
+os.environ["WANDB_PROJECT"] = "mt0-srl-finetuning"
 
 def make_preprocess(tokenizer_, max_length=256):
     def preprocess_(batch):
@@ -65,7 +65,7 @@ def tune(train_langs, srl_type):
         if "tune" in raw_datasets.keys():
             train_datasets.append(raw_datasets["tune"])
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42).select(range(1000))
-    combined_val = concatenate_datasets(val_datasets).shuffle(seed=42).select(range(200))
+    combined_val = concatenate_datasets(val_datasets).select(range(500))
     preprocess = make_preprocess(tokenizer)
     train_ds = combined_train.map(preprocess, batched=True)
     val_ds = combined_val.map(preprocess, batched=True)
@@ -81,11 +81,11 @@ def tune(train_langs, srl_type):
 
     def optuna_hp_space(trial):
         return {
-            "learning_rate": trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True),
+            "learning_rate": trial.suggest_float("learning_rate", 1e-5, 5e-3, log=True),
             "warmup_ratio": trial.suggest_float("warmup_ratio", 0.0, 0.2),
             "weight_decay": trial.suggest_float("weight_decay", 0.0, 0.1),
-            "num_train_epochs": trial.suggest_categorical("num_train_epochs", [3, 4, 5]),
-            "gradient_accumulation_steps": trial.suggest_categorical("gradient_accumulation_steps", [2, 4, 8])
+            "num_train_epochs": trial.suggest_categorical("num_train_epochs", [4, 5]),
+            "gradient_accumulation_steps": trial.suggest_categorical("gradient_accumulation_steps", [4, 8])
         }
 
     training_args = Seq2SeqTrainingArguments(
@@ -170,8 +170,8 @@ def train(train_langs, srl_type):
     val_ds = combined_val.map(preprocess, batched=True)
 
     lr = 2e-4
-    warmup_ratio = 0.0
-    weight_decay = 0.0
+    warmup_ratio = 0.02
+    weight_decay = 0.01
     grad_accum = 4
     num_train_epochs = 4
     run_results_dir = os.path.join(RESULTS_DIR, run_name)
@@ -195,7 +195,7 @@ def train(train_langs, srl_type):
         eval_strategy="epoch",
         save_strategy="epoch",
         # TODO: if using adamw_torch set per_device_train_batch_size to 6, if using adamw_bnb_8bit set it to 8
-        per_device_train_batch_size=6, # This gets multiplied by GPUs * accum step automatically
+        per_device_train_batch_size=8, # This gets multiplied by GPUs * accum step automatically
         per_device_eval_batch_size=6,
         predict_with_generate=True,
         generation_max_length=256,
@@ -209,7 +209,7 @@ def train(train_langs, srl_type):
         save_total_limit=1,
         load_best_model_at_end=True,
         ddp_find_unused_parameters=False, # False speeds up DDP training
-        optim="adamw_torch", # bed and breakfast is better
+        optim="adamw_bnb_8bit", # bed and breakfast is better
         gradient_accumulation_steps=grad_accum,
         gradient_checkpointing=True, # Save memory at the cost of slower training, activate only if fsdp is commented out
         # --- ADD THESE TWO LINES FOR FSDP ---

@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=SRL_finetune
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:tesla:4
+#SBATCH --gres=gpu:tesla:2
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --output=/home/davide.vitagliano/SRL/finetune.log
+#SBATCH --cpus-per-task=12
+#SBATCH --output=/home/davide.vitagliano/SRL/finetune_%j.log
 #SBATCH --chdir=/home/davide.vitagliano/SRL
 
 # Ensure the user passed a model, and action, an SRL type, and at least one language
@@ -19,6 +19,8 @@ fi
 MODEL=$1
 ACTION=$2
 SRL_TYPE=$3
+MASTER_PORT=$(shuf -i 29501-29700 -n 1)
+NUM_GPUS=$SLURM_GPUS_ON_NODE
 
 # Shift trice to remove model, action and srl_type from the arguments list
 shift 3
@@ -40,7 +42,7 @@ conda activate pytorch
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-# Use torchrun to launch the script across all 4 GPUs natively
-torchrun ./src/finetune.py --model $MODEL --action $ACTION --srl-type $SRL_TYPE --langs $LANGS
+# Use torchrun to launch the script across # GPUs natively
+torchrun --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT ./src/finetune.py --model $MODEL --action $ACTION --srl-type $SRL_TYPE --langs $LANGS
 
 exit
