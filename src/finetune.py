@@ -46,24 +46,25 @@ def tune(train_langs, srl_type):
     run_name = f"{srl_type}_{train_name}_tuning"
     train_datasets = []
     val_datasets = []
+    processed_base_langs = set()
     for lang in train_langs:
-        if "-s" not in lang:
+        is_tune = "-s" in lang
+        base_lang = lang.replace("-s", "")
+        if base_lang not in processed_base_langs:
             data_files = {
-                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
-                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+                "train": f"data/linearizations_{srl_type}_Train_{base_lang}.tsv",
+                "val": f"data/linearizations_{srl_type}_Val_{base_lang}.tsv"
             }
-        else:
-            lang = lang.replace("-s", "")
-            data_files = {
-                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
-                "tune": f"data/linearizations_{srl_type}_FT_{lang}.tsv",
-                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
+            raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
+            train_datasets.append(raw_datasets["train"])
+            val_datasets.append(raw_datasets["val"])
+            processed_base_langs.add(base_lang)
+        if is_tune:
+            tune_files = {
+                "tune": f"data/linearizations_{srl_type}_FT_{base_lang}.tsv"
             }
-        raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
-        train_datasets.append(raw_datasets["train"])
-        val_datasets.append(raw_datasets["val"])
-        if "tune" in raw_datasets.keys():
-            train_datasets.append(raw_datasets["tune"])
+            tune_dataset = load_dataset("csv", data_files=tune_files, delimiter="\t")
+            train_datasets.append(tune_dataset["tune"])
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42).select(range(1000))
     combined_val = concatenate_datasets(val_datasets).select(range(500))
     preprocess = make_preprocess(tokenizer)
