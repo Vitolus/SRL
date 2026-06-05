@@ -48,24 +48,27 @@ def tune(train_langs, srl_type):
     run_name = f"{srl_type}_{train_name}_tuning"
     train_datasets = []
     val_datasets = []
+    loaded_files = set()
     for lang in train_langs:
-        if "-s" not in lang:
-            data_files = {
-                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
-                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
-            }
+        is_tune = "-s" in lang
+        base_lang = lang.replace("-s", "")
+        # Handle Validation File (Always needed)
+        val_file = f"data/linearizations_{srl_type}_Val_{base_lang}.tsv"
+        if val_file not in loaded_files:
+            val_ds = load_dataset("csv", data_files={"val": val_file}, delimiter="\t")
+            val_datasets.append(val_ds["val"])
+            loaded_files.add(val_file)
+        # Handle Training Data (Either FT or Train)
+        if is_tune:
+            data_file = f"data/linearizations_{srl_type}_FT_{base_lang}.tsv"
+            key = "tune"
         else:
-            lang = lang.replace("-s", "")
-            data_files = {
-                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
-                "tune": f"data/linearizations_{srl_type}_FT_{lang}.tsv",
-                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
-            }
-        raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
-        train_datasets.append(raw_datasets["train"])
-        val_datasets.append(raw_datasets["val"])
-        if "tune" in raw_datasets.keys():
-            train_datasets.append(raw_datasets["tune"])
+            data_file = f"data/linearizations_{srl_type}_Train_{base_lang}.tsv"
+            key = "train"
+        if data_file not in loaded_files:
+            train_ds = load_dataset("csv", data_files={key: data_file}, delimiter="\t")
+            train_datasets.append(train_ds[key])
+            loaded_files.add(data_file)
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42).select(range(1000))
     combined_val = concatenate_datasets(val_datasets).select(range(500))
     preprocess = make_preprocess(tokenizer)
@@ -147,24 +150,25 @@ def train(train_langs, srl_type):
     # 3. Load Datasets for the train_langs
     train_datasets = []
     val_datasets = []
+    loaded_files = set()
     for lang in train_langs:
-        if "-s" not in lang:
-            data_files = {
-                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
-                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
-            }
+        is_tune = "-s" in lang
+        base_lang = lang.replace("-s", "")
+        val_file = f"data/linearizations_{srl_type}_Val_{base_lang}.tsv"
+        if val_file not in loaded_files:
+            val_ds = load_dataset("csv", data_files={"val": val_file}, delimiter="\t")
+            val_datasets.append(val_ds["val"])
+            loaded_files.add(val_file)
+        if is_tune:
+            data_file = f"data/linearizations_{srl_type}_FT_{base_lang}.tsv"
+            key = "tune"
         else:
-            lang = lang.replace("-s", "")
-            data_files = {
-                "train": f"data/linearizations_{srl_type}_Train_{lang}.tsv",
-                "tune": f"data/linearizations_{srl_type}_FT_{lang}.tsv",
-                "val": f"data/linearizations_{srl_type}_Val_{lang}.tsv"
-            }
-        raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
-        train_datasets.append(raw_datasets["train"])
-        val_datasets.append(raw_datasets["val"])
-        if "tune" in raw_datasets.keys():
-            train_datasets.append(raw_datasets["tune"])
+            data_file = f"data/linearizations_{srl_type}_Train_{base_lang}.tsv"
+            key = "train"
+        if data_file not in loaded_files:
+            train_ds = load_dataset("csv", data_files={key: data_file}, delimiter="\t")
+            train_datasets.append(train_ds[key])
+            loaded_files.add(data_file)
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
     preprocess = make_preprocess(tokenizer)
