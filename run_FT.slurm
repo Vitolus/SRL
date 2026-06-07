@@ -8,20 +8,22 @@
 #SBATCH --chdir=/home/davide.vitagliano/SRL
 
 # Ensure the user passed a model, and action, an SRL type, and at least one language
-if [ -z "$1" ] || [ -z "$2" ]  || [ -z "$3" ]; then
+if [ -z "$1" ] || [ -z "$2" ]  || [ -z "$3" ] || [ -z "$4" ]; then
     echo "Error: Missing arguments."
-    echo "Usage: sbatch run_FT.slurm <model> <srl_type> <lang1> [lang2] ..."
+    echo "Usage: sbatch run_FT.slurm <model> <action> <srl_type> <lang1> [lang2] ..."
+    echo "Actions: train | eval"
     echo "Example: sbatch run_FT.slurm mt5 train dependency EN ZH"
     exit 1
 fi
 
 MODEL=$1
+ACTION=$2
 SRL_TYPE=$3
 MASTER_PORT=$(shuf -i 29501-29700 -n 1)
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 
 # Shift trice to remove model and srl_type from the arguments list
-shift 2
+shift 3
 
 # Everything remaining ($@) is just your languages
 LANGS="$@"
@@ -29,7 +31,7 @@ LANGS="$@"
 echo "========================================="
 echo "Starting Distributed Job"
 echo "Model: $MODEL"
-echo "Action: train"
+echo "Action: $ACTION"
 echo "SRL Type: $SRL_TYPE"
 echo "Languages: $LANGS"
 echo "========================================="
@@ -41,6 +43,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Use torchrun to launch the script across # GPUs natively
-torchrun --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT ./src/finetune.py --model $MODEL --srl-type $SRL_TYPE --langs $LANGS
+torchrun --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT ./src/finetune.py --model $MODEL --action $ACTION --srl-type $SRL_TYPE --langs $LANGS
 
 exit
