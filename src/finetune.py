@@ -29,13 +29,11 @@ def make_preprocess(tokenizer_, max_length=256):
     def preprocess_(batch):
         model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
         for src, tgt in zip(batch["input"], batch["output"]):
-            encoded = tokenizer_(src, truncation=True, padding="max_length", max_length=max_length)
-            labels = tokenizer_(text_target=tgt, truncation=True, padding="max_length", max_length=max_length)
-            pad = tokenizer_.pad_token_id
-            labels_ids = [tok if tok != pad else -100 for tok in labels["input_ids"]]
+            encoded = tokenizer_(src, truncation=True, padding=False, max_length=max_length)
+            labels = tokenizer_(text_target=tgt, truncation=True, padding=False, max_length=max_length)
             model_inputs["input_ids"].append(encoded["input_ids"])
             model_inputs["attention_mask"].append(encoded["attention_mask"])
-            model_inputs["labels"].append(labels_ids)
+            model_inputs["labels"].append(labels["input_ids"])
         return model_inputs
     return preprocess_
 
@@ -111,7 +109,7 @@ def tune(train_langs, srl_type):
         train_dataset=train_ds,
         eval_dataset=val_ds,
         processing_class=tokenizer,
-        data_collator=DataCollatorForSeq2Seq(tokenizer, model=None),
+        data_collator=DataCollatorForSeq2Seq(tokenizer, model=None, label_pad_token_id=-100),
         compute_metrics=compute_metrics_val
     )
 
@@ -227,7 +225,7 @@ def train(train_langs, srl_type):
         train_dataset=train_ds,
         eval_dataset=val_ds,
         processing_class=tokenizer,
-        data_collator=DataCollatorForSeq2Seq(tokenizer, model),
+        data_collator=DataCollatorForSeq2Seq(tokenizer, model, label_pad_token_id=-100),
         compute_metrics=compute_metrics_val
     )
     # 5. Train
@@ -275,7 +273,7 @@ def evaluate(train_langs, srl_type):
             args=eval_args,
             eval_dataset=test_ds,
             processing_class=tokenizer,
-            data_collator=DataCollatorForSeq2Seq(tokenizer, model),
+            data_collator=DataCollatorForSeq2Seq(tokenizer, model, label_pad_token_id=-100),
             compute_metrics=compute_metrics_test
         )
         print(f"Evaluating on {test_lang} test set...")
