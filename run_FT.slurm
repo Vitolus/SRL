@@ -1,18 +1,18 @@
 #!/bin/bash
-#SBATCH --job-name=SRL_finetune
+#SBATCH --job-name=SRL_FT
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:tesla:2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
-#SBATCH --output=/home/davide.vitagliano/SRL/finetune_%j.log
+#SBATCH --output=/home/davide.vitagliano/SRL/FT_%j.log
 #SBATCH --chdir=/home/davide.vitagliano/SRL
 
 # Ensure the user passed a model, and action, an SRL type, and at least one language
 if [ -z "$1" ] || [ -z "$2" ]  || [ -z "$3" ] || [ -z "$4" ]; then
     echo "Error: Missing arguments."
-    echo "Usage: sbatch run.slurm <model> <action> <srl_type> <lang1> [lang2] ..."
+    echo "Usage: sbatch run_FT.slurm <model> <action> <srl_type> <lang1> [lang2] ..."
     echo "Actions: train | eval"
-    echo "Example: sbatch run.slurm mt5 train dependency EN ZH"
+    echo "Example: sbatch run_FT.slurm mt5 train dependency EN ZH"
     exit 1
 fi
 
@@ -22,7 +22,7 @@ SRL_TYPE=$3
 MASTER_PORT=$(shuf -i 29501-29700 -n 1)
 NUM_GPUS=$SLURM_GPUS_ON_NODE
 
-# Shift trice to remove model, action and srl_type from the arguments list
+# Shift trice to remove model and srl_type from the arguments list
 shift 3
 
 # Everything remaining ($@) is just your languages
