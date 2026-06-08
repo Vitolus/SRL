@@ -38,7 +38,7 @@ def make_preprocess(tokenizer_, max_length=256):
     return preprocess_
 
 def sft(train_langs, srl_type):
-    MODEL_DIR = f"models/{srl_type}_EN_ZH_mt0_best"
+    MODEL_DIR = f"{args.model}_models/{srl_type}_EN_ZH_{args.model}_best"
     tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
     model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_DIR)
     train_name = "_".join(train_langs)
