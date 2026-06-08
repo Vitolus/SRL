@@ -12,7 +12,7 @@ if [ -z "$1" ] || [ -z "$2" ]  || [ -z "$3" ] || [ -z "$4" ]; then
     echo "Error: Missing arguments."
     echo "Usage: sbatch run_FT.slurm <model> <action> <srl_type> <lang1> [lang2] ..."
     echo "Actions: train | eval"
-    echo "Example: sbatch run_FT.slurm mt5 train dependency EN ZH"
+    echo "Example: sbatch run_FT.slurm mt5 train dependency EN ZH ES-s"
     exit 1
 fi
 
@@ -43,6 +43,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Use torchrun to launch the script across # GPUs natively
-torchrun --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT ./src/finetune.py --model $MODEL --action $ACTION --srl-type $SRL_TYPE --langs $LANGS
+torchrun --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT ./src/sft.py --model $MODEL --action $ACTION --srl-type $SRL_TYPE --langs $LANGS
 
 exit
