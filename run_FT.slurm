@@ -12,7 +12,7 @@ if [ -z "$1" ] || [ -z "$2" ]  || [ -z "$3" ] || [ -z "$4" ]; then
     echo "Error: Missing arguments."
     echo "Usage: sbatch run_FT.slurm <model> <action> <srl_type> <lang1> [lang2] ..."
     echo "Actions: train | eval"
-    echo "Example: sbatch run_FT.slurm mt5 train dependency EN ZH"
+    echo "Example: sbatch run_FT.slurm mt5 train dependency EN ZH ES-s"
     exit 1
 fi
 
