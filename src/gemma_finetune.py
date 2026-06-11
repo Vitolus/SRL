@@ -25,15 +25,12 @@ if 'src' not in sys.path:
 os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
 
-# [Inference] Gemma instruction models perform best when wrapped in their native conversational template.
+# Gemma instruction models should perform best when wrapped in their native conversational template.
 def apply_chat_template(example, is_training=True):
-    """Formats the input and output into Gemma's expected chat template."""
-    # Note: Modify the system/user instruction prompt below to match your exact SRL task phrasing
+    # Modify the system/user instruction prompt below to match your exact SRL task phrasing
     prompt = f"<start_of_turn>user\nPerform Semantic Role Labeling on this sentence:\n{example['input']}<end_of_turn>\n<start_of_turn>model\n"
-
     if is_training:
         prompt += f"{example['output']}<end_of_turn>"
-
     return {"text": prompt}
 
 
