@@ -26,9 +26,17 @@ if 'src' not in sys.path:
 os.environ["WANDB_PROJECT"] = "mt0-srl-finetuning"
 
 def make_preprocess(tokenizer_, max_length=256):
+    # TODO: check batch has lang
     def preprocess_(batch):
+        map_langs_ = {"EN": "en",
+                      'ZH': 'zh',
+                      "FR": 'fr',
+                      "ES": "es"
+                      }
         model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
-        for src, tgt in zip(batch["input"], batch["output"]):
+        for src, lang, tgt in zip(batch["input"], batch["lang"], batch["output"]):
+            tokenizer_.src_lang = map_langs_[lang]
+            tokenizer_.tgt_lang = map_langs_[lang]
             encoded = tokenizer_(src, truncation=True, padding=False, max_length=max_length)
             labels = tokenizer_(text_target=tgt, truncation=True, padding=False, max_length=max_length)
             model_inputs["input_ids"].append(encoded["input_ids"])
