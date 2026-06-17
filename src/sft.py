@@ -10,6 +10,7 @@ from transformers import (
     DataCollatorForSeq2Seq,
 )
 from evaluation import prepare_compute_metrics
+from finetune import make_preprocess, evaluate
 import sys
 import warnings
 import torch.distributed as dist
@@ -24,18 +25,6 @@ if 'src' not in sys.path:
 # Tell Hugging Face Trainer to use this WandB project automatically
 # TODO: change to correct project name
 os.environ["WANDB_PROJECT"] = "mt0-srl-finetuning"
-
-def make_preprocess(tokenizer_, max_length=256):
-    def preprocess_(batch):
-        model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
-        for src, tgt in zip(batch["input"], batch["output"]):
-            encoded = tokenizer_(src, truncation=True, padding=False, max_length=max_length)
-            labels = tokenizer_(text_target=tgt, truncation=True, padding=False, max_length=max_length)
-            model_inputs["input_ids"].append(encoded["input_ids"])
-            model_inputs["attention_mask"].append(encoded["attention_mask"])
-            model_inputs["labels"].append(labels["input_ids"])
-        return model_inputs
-    return preprocess_
 
 def sft(train_langs, srl_type):
     MODEL_DIR = f"{args.model}_models/{srl_type}_EN_ZH_{args.model}_best"
@@ -128,65 +117,6 @@ def sft(train_langs, srl_type):
     gc.collect()
     torch.cuda.empty_cache()
     return best_model_dir
-
-def evaluate(train_langs, srl_type):
-    train_name = "_".join(train_langs)
-    run_name = f"{srl_type}_{train_name}_{args.model}"
-    best_model_dir = os.path.join(MODELS_DIR, f"{run_name}_best")
-    tokenizer = AutoTokenizer.from_pretrained(best_model_dir)
-    model = AutoModelForSeq2SeqLM.from_pretrained(best_model_dir)
-    preprocess = make_preprocess(tokenizer)
-    all_results = []
-    # Evaluation on ALL test languages
-    for test_lang in ['EN', 'ZH', 'ES', 'FR']:
-        test_data_files = {"test": f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"}
-        raw_test = load_dataset("csv", data_files=test_data_files, delimiter="\t")
-        test_ds = raw_test["test"].map(preprocess, batched=True)
-        compute_metrics_test = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, run_name=run_name)
-        eval_args = Seq2SeqTrainingArguments(
-            output_dir=os.path.join(MODELS_DIR, "temp_eval"),
-            per_device_eval_batch_size=6,
-            predict_with_generate=True,
-            generation_max_length=256,
-            report_to=["wandb"],
-            run_name=f"{run_name}_eval_{test_lang}",
-            # --- ADD THESE TWO LINES FOR FSDP ---
-            # fsdp="full_shard auto_wrap",
-            # fsdp_transformer_layer_cls_to_wrap="MT5Block",
-        )
-        evaluator = Seq2SeqTrainer(
-            model=model,
-            args=eval_args,
-            eval_dataset=test_ds,
-            processing_class=tokenizer,
-            data_collator=DataCollatorForSeq2Seq(tokenizer, model, label_pad_token_id=-100),
-            compute_metrics=compute_metrics_test
-        )
-        print(f"Evaluating on {test_lang} test set...")
-        test_results = evaluator.evaluate(metric_key_prefix=f"eval")
-        row = {
-            "srl_type": srl_type,
-            "train_lang": train_name,
-            "test_lang": test_lang,
-            **test_results
-        }
-        all_results.append(row)
-        del evaluator
-        gc.collect()
-        torch.cuda.empty_cache()
-        wandb.finish()
-    # Save final results
-    # Only save on the main process to prevent multiple GPUs writing to the same file
-    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        df = pd.DataFrame(all_results)
-        run_results_dir = os.path.join(RESULTS_DIR, run_name)
-        os.makedirs(run_results_dir, exist_ok=True)
-        results_path = os.path.join(run_results_dir, f"{run_name}_results.csv")
-        df.to_csv(results_path, index=False)
-        print(f"Evaluation completed. Results saved to {results_path}")
-    del model, tokenizer
-    gc.collect()
-    torch.cuda.empty_cache()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="mT0 Fine-tuning for SRL")
