@@ -1,5 +1,6 @@
-import os, gc, argparse, json
+import os, gc, argparse, json, sys, warnings
 import pandas as pd
+import numpy as np
 import torch
 import torch.distributed as dist
 from datasets import load_dataset, concatenate_datasets
@@ -7,12 +8,10 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TrainingArguments,
-    DataCollatorForLanguageModeling
 )
 from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
 from evaluation import get_tokenizer, prepare_compute_metrics
-import sys
-import warnings
+from tqdm.auto import tqdm
 import wandb
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -31,56 +30,47 @@ def apply_chat_template(example, is_training=True):
     prompt = f"<start_of_turn>user\nPerform Semantic Role Labeling on this sentence:\n{example['input']}<end_of_turn>\n<start_of_turn>model\n"
     if is_training:
         prompt += f"{example['output']}<end_of_turn>"
-    return {"text": prompt}
+    return {"text": prompt, "prompt": prompt}
 
 
-def finetune(train_langs, srl_type, model_name, run_name):
+def train(train_langs, srl_type, model_name, run_name, models_dir):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer = get_tokenizer(tokenizer)
-
     # Gemma does not have a native pad token; it is standard to use the EOS token
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    # Load model in bfloat16 as recommended for Gemma models
+    # Right padding is optimal for causal LM training
+    tokenizer.padding_side = "right"
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
         device_map="auto" if not dist.is_initialized() else None
     )
     model.resize_token_embeddings(len(tokenizer))
-
     train_datasets = []
     val_datasets = []
     loaded_files = set()
-
-    # Load Data using the '-s' isolated logic
     for lang in train_langs:
         if "-s" in lang:
             base_lang = lang.replace("-s", "")
-
             val_file = f"data/linearizations_{srl_type}_Val_{base_lang}.tsv"
             if val_file not in loaded_files:
                 val_ds = load_dataset("csv", data_files={"val": val_file}, delimiter="\t")
                 val_datasets.append(val_ds["val"])
                 loaded_files.add(val_file)
-
             data_file = f"data/linearizations_{srl_type}_FT_{base_lang}.tsv"
             if data_file not in loaded_files:
                 train_ds = load_dataset("csv", data_files={"tune": data_file}, delimiter="\t")
                 train_datasets.append(train_ds["tune"])
                 loaded_files.add(data_file)
-
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
-
-    # Apply the chat template format
     train_ds = combined_train.map(lambda x: apply_chat_template(x, is_training=True))
     val_ds = combined_val.map(lambda x: apply_chat_template(x, is_training=True))
 
     training_args = TrainingArguments(
-        output_dir=os.path.join(MODELS_DIR, f"{run_name}_checkpoints"),
+        output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
         per_device_train_batch_size=4,  # Reduced for causal LM memory footprint
@@ -103,7 +93,7 @@ def finetune(train_langs, srl_type, model_name, run_name):
     response_template = "<start_of_turn>model\n"
     collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tokenizer)
 
-    # TRL's SFTTrainer handles the causal LM masking and formatting automatically
+    # SFTTrainer handles the causal LM masking and formatting automatically
     trainer = SFTTrainer(
         model=model,
         args=training_args,
@@ -117,42 +107,59 @@ def finetune(train_langs, srl_type, model_name, run_name):
 
     print(f"Starting SFT for {run_name}...")
     trainer.train()
-
-    best_model_dir = os.path.join(MODELS_DIR, f"{run_name}_best")
+    best_model_dir = os.path.join(models_dir, f"{run_name}_best")
     trainer.save_model(best_model_dir)
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         tokenizer.save_pretrained(best_model_dir)
-
     del model, trainer
     gc.collect()
     torch.cuda.empty_cache()
 
 
-def zero_shot(test_langs, srl_type, model_name, run_name):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+def evaluate(test_langs, srl_type, base_model_name, run_name, models_dir, results_dir, is_zero_shot=False):
+    best_model_dir = os.path.join(models_dir, f"{run_name}_best")
+    # Resolve which model to load based on the flag or availability
+    if is_zero_shot:
+        print(f"--- Running ZERO-SHOT Evaluation on base model: {base_model_name} ---")
+        model_to_load = base_model_name
+    else:
+        if os.path.exists(best_model_dir):
+            print(f"--- Running Evaluation on fine-tuned model: {best_model_dir} ---")
+            model_to_load = best_model_dir
+        else:
+            print(
+                f"WARNING: Fine-tuned model not found at {best_model_dir}. Falling back to ZERO-SHOT on {base_model_name}.")
+            model_to_load = base_model_name
+    tokenizer = AutoTokenizer.from_pretrained(model_to_load)
+    tokenizer = get_tokenizer(tokenizer)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.padding_side = 'left'
+
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
+        model_to_load,
+        torch_dtype=torch.float16,
         device_map="auto"
     )
     model.eval()
 
     all_results = []
-
     for test_lang in test_langs:
-        print(f"Running zero-shot inference on {test_lang}...")
+        print(f"\nEvaluating on {test_lang} test set...")
         test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
         raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
-
-        # Apply prompt template without appending the actual output
-        test_ds = raw_test["test"].map(lambda x: apply_chat_template(x, is_training=False))
-
-        predictions = []
-        references = raw_test["test"]["output"]
-
-        # Basic inference loop
-        for batch in test_ds.iter(batch_size=8):
-            inputs = tokenizer(batch["text"], return_tensors="pt", padding=True, truncation=True, max_length=256).to(
+        # We need sequential dataset access to properly write CoNLL files
+        test_ds = raw_test["test"]
+        test_ds = test_ds.map(lambda x: apply_chat_template(x, is_training=False))
+        compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer,
+                                                  run_name=f"{run_name}_{test_lang}")
+        all_preds = []
+        all_labels = []
+        batch_size = 8
+        for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
+            batch = test_ds[i:i + batch_size]
+            inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256).to(
                 model.device)
 
             with torch.no_grad():
@@ -162,55 +169,61 @@ def zero_shot(test_langs, srl_type, model_name, run_name):
                     do_sample=False,  # Greedy decoding for structured tasks
                     pad_token_id=tokenizer.eos_token_id
                 )
-
-            # Slice the output to only extract the newly generated tokens (ignore the prompt)
+            # Extract only the newly generated tokens
             prompt_lengths = inputs["input_ids"].shape[1]
-            generated_tokens = outputs[:, prompt_lengths:]
-            decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            predictions.extend(decoded_preds)
+            generated_tokens = outputs[:, prompt_lengths:].cpu().numpy()
+            # Tokenize labels so we can feed them into compute_metrics
+            labels = tokenizer(batch["output"], return_tensors="pt", padding=True, truncation=True,
+                               max_length=128).input_ids.cpu().numpy()
+            for p, l in zip(generated_tokens, labels):
+                all_preds.append(p)
+                all_labels.append(l)
 
-        # Assuming prepare_compute_metrics returns a dict of standard metrics
-        # You will need to adapt evaluation.py to accept raw lists of text instead of EvalPrediction objects for zero-shot
-        metrics_dict = calculate_metrics(predictions, references)  # Placeholder for your custom metric execution
-
+        # Pad tokens arrays to their local max length using standard pad tokens
+        max_pred_len = max(len(p) for p in all_preds)
+        max_label_len = max(len(l) for l in all_labels)
+        padded_preds = np.full((len(all_preds), max_pred_len), tokenizer.pad_token_id, dtype=np.int64)
+        padded_labels = np.full((len(all_labels), max_label_len), -100,
+                                dtype=np.int64)  # evaluation.py expects labels to have -100 padding
+        for idx, (p, l) in enumerate(zip(all_preds, all_labels)):
+            padded_preds[idx, :len(p)] = p
+            padded_labels[idx, :len(l)] = l
+        metrics_dict = compute_metrics((padded_preds, padded_labels))
         row = {
             "srl_type": srl_type,
-            "mode": "zero_shot",
+            "mode": "zero_shot" if model_to_load == base_model_name else "eval",
             "test_lang": test_lang,
+            "model": model_to_load,
             **metrics_dict
         }
         all_results.append(row)
-
+    # Output file handling isolated to Main GPU
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         df = pd.DataFrame(all_results)
-        run_results_dir = os.path.join(RESULTS_DIR, run_name)
+        run_results_dir = os.path.join(results_dir, run_name)
         os.makedirs(run_results_dir, exist_ok=True)
-        results_path = os.path.join(run_results_dir, f"{run_name}_zeroshot_results.csv")
+        eval_mode_str = "zeroshot" if is_zero_shot else "finetuned"
+        results_path = os.path.join(run_results_dir, f"{run_name}_{eval_mode_str}_results.csv")
         df.to_csv(results_path, index=False)
-        print(f"Zero-shot completed. Results saved to {results_path}")
+        print(f"\nEvaluation completed. Results saved to {results_path}")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Gemma 3 Fine-tuning for SRL")
-    parser.add_argument("--action", type=str, required=True, choices=['finetune', 'zeroshot'], help="Execution mode")
+    parser.add_argument("--action", type=str, required=True, choices=['train', 'eval'], help="Execution mode")
     parser.add_argument("--srl-type", type=str, required=True, choices=['dependency', 'span'], help="Type of SRL task")
     parser.add_argument("--langs", nargs='+', required=True, help="List of languages (e.g., EN-s ZH-s)")
+    parser.add_argument("--zero-shot", action="store_true", help="Force zero-shot evaluation on base model")
     args = parser.parse_args()
-
-    # Define model identifier here
     MODEL_NAME = "google/gemma-3-1b-it"
-
     train_name = "_".join(args.langs)
     RUN_NAME = f"{args.srl_type}_{train_name}_gemma3_1B"
-
     MODELS_DIR = "gemma_models/"
     RESULTS_DIR = "gemma_results/"
     os.makedirs(MODELS_DIR, exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
-
     print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs} ---")
-
-    if args.action == 'finetune':
-        finetune(args.langs, args.srl_type, MODEL_NAME, RUN_NAME)
-    elif args.action == 'zeroshot':
-        zero_shot(args.langs, args.srl_type, MODEL_NAME, RUN_NAME)
+    if args.action == 'train':
+        train(args.langs, args.srl_type, MODEL_NAME, RUN_NAME, MODELS_DIR)
+    elif args.action == 'eval':
+        evaluate(args.langs, args.srl_type, MODEL_NAME, RUN_NAME, MODELS_DIR, RESULTS_DIR, is_zero_shot=args.zero_shot)
