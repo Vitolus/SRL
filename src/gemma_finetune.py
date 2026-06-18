@@ -7,9 +7,8 @@ from datasets import load_dataset, concatenate_datasets
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    TrainingArguments,
 )
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
 from evaluation import get_tokenizer, prepare_compute_metrics
 from tqdm.auto import tqdm
 import wandb
@@ -69,7 +68,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     train_ds = combined_train.map(lambda x: apply_chat_template(x, is_training=True))
     val_ds = combined_val.map(lambda x: apply_chat_template(x, is_training=True))
 
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
@@ -79,7 +78,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         report_to=["wandb"],
         run_name=run_name,
         learning_rate=0.0009981416500547528,
-        weight_decay=0.03,
+        weight_decay=0.01,
         num_train_epochs=5,
         save_total_limit=1,
         load_best_model_at_end=True,
@@ -87,6 +86,13 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         optim="adamw_bnb_8bit",
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
+        dataset_text_field="text",
+        max_seq_length=256,
+        warmup_ratio=0.03,
+        lr_scheduler_type="cosine",
+        neftune_noise_alpha=5,
+        loss_type="chunked_nll",
+        gradient_checkpointing_kwargs={"use_reentrant": False}
     )
 
     # Use DataCollatorForCompletionOnlyLM to only calculate loss on the model's response, not the user prompt
@@ -100,9 +106,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         train_dataset=train_ds,
         eval_dataset=val_ds,
         processing_class=tokenizer,
-        data_collator=collator,
-        dataset_text_field="text",
-        max_seq_length=256
+        data_collator=collator
     )
 
     print(f"Starting SFT for {run_name}...")
