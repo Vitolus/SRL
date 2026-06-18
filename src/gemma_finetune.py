@@ -144,6 +144,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         torch_dtype=torch.float16,
         device_map="auto"
     )
+    model.resize_token_embeddings(len(tokenizer))
     model.eval()
 
     all_results = []
