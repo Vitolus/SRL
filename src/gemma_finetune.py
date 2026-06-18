@@ -149,6 +149,13 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     all_results = []
     test_langs = ['EN', 'ZH', 'ES', 'FR']
     for test_lang in test_langs:
+        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            eval_mode_str = "zeroshot" if is_zero_shot else "_".join(train_langs)
+            wandb.init(
+                project=os.environ.get("WANDB_PROJECT", "gemma-srl-finetuning"),
+                name=f"{run_name}_{eval_mode_str}_{test_lang}",
+                reinit=True  # Required to start a new run in the same script
+            )
         print(f"\nEvaluating on {test_lang} test set...")
         test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
         raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
@@ -200,15 +207,18 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             **metrics_dict
         }
         all_results.append(row)
+        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            wandb.finish()
     # Output file handling isolated to Main GPU
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         df = pd.DataFrame(all_results)
         run_results_dir = os.path.join(results_dir, run_name)
         os.makedirs(run_results_dir, exist_ok=True)
-        eval_mode_str = "zeroshot" if is_zero_shot else "finetuned"
+        eval_mode_str = "zeroshot" if is_zero_shot else "_".join(train_langs)
         results_path = os.path.join(run_results_dir, f"{run_name}_{eval_mode_str}_results.csv")
         df.to_csv(results_path, index=False)
         print(f"\nEvaluation completed. Results saved to {results_path}")
+        wandb.finish()
 
 
 if __name__ == '__main__':
