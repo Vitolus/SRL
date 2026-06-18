@@ -10,12 +10,12 @@
 # Ensure the user passed at least an action and an SRL type
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Error: Missing arguments."
-    echo "Usage: sbatch run.slurm <action> <srl_type> [lang1 lang2 ...]"
+    echo "Usage: sbatch run_gemma.slurm <action> <srl_type> [lang1 lang2 ...]"
     echo "Actions: train | eval"
     echo "Examples:"
-    echo "  sbatch run.slurm train dependency EN-s ZH-s"
-    echo "  sbatch run.slurm eval dependency EN-s ZH-s"
-    echo "  sbatch run.slurm eval dependency"
+    echo "  sbatch run_gemma.slurm train dependency EN-s ZH-s"
+    echo "  sbatch run_gemma.slurm eval dependency EN-s ZH-s"
+    echo "  sbatch run_gemma.slurm eval dependency"
     exit 1
 fi
 
