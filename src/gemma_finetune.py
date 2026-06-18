@@ -88,7 +88,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
         completion_only_loss=True,
-        max_seq_length=256,
+        max_length=256,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5,
