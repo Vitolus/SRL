@@ -8,7 +8,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
 )
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM, SFTConfig
+from trl import SFTTrainer, SFTConfig
 from evaluation import get_tokenizer, prepare_compute_metrics
 from tqdm.auto import tqdm
 import wandb
@@ -27,9 +27,10 @@ os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 def apply_chat_template(example, is_training=True):
     # Modify the system/user instruction prompt below to match your exact SRL task phrasing
     prompt = f"<start_of_turn>user\nPerform Semantic Role Labeling on this sentence:\n{example['input']}<end_of_turn>\n<start_of_turn>model\n"
+    result = {"prompt": prompt}
     if is_training:
-        prompt += f"{example['output']}<end_of_turn>"
-    return {"text": prompt, "prompt": prompt}
+        result["completion"] = f"{example['output']}<end_of_turn>"
+    return result
 
 
 def train(train_langs, srl_type, model_name, run_name, models_dir):
@@ -86,7 +87,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         optim="adamw_bnb_8bit",
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
-        dataset_text_field="text",
+        completion_only_loss=True,
         max_seq_length=256,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
@@ -95,18 +96,13 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         gradient_checkpointing_kwargs={"use_reentrant": False}
     )
 
-    # Use DataCollatorForCompletionOnlyLM to only calculate loss on the model's response, not the user prompt
-    response_template = "<start_of_turn>model\n"
-    collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tokenizer)
-
     # SFTTrainer handles the causal LM masking and formatting automatically
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        processing_class=tokenizer,
-        data_collator=collator
+        processing_class=tokenizer
     )
 
     print(f"Starting SFT for {run_name}...")
