@@ -73,17 +73,17 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=4,  # Reduced for causal LM memory footprint
+        per_device_train_batch_size=8,
         per_device_eval_batch_size=4,
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name,
-        learning_rate=2e-5,  # Lower learning rate recommended for fine-tuning LLMs
-        weight_decay=0.01,
-        num_train_epochs=4,
+        learning_rate=0.0009981416500547528,
+        weight_decay=0.03,
+        num_train_epochs=5,
         save_total_limit=1,
         load_best_model_at_end=True,
-        bf16=True,  # Gemma trains best in bf16
+        fp16=True, # Gemma trains best in bf16
         optim="adamw_bnb_8bit",
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
@@ -116,7 +116,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     torch.cuda.empty_cache()
 
 
-def evaluate(test_langs, srl_type, base_model_name, run_name, models_dir, results_dir, is_zero_shot=False):
+def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, results_dir):
+    is_zero_shot = len(train_langs) == 0
     best_model_dir = os.path.join(models_dir, f"{run_name}_best")
     # Resolve which model to load based on the flag or availability
     if is_zero_shot:
@@ -130,6 +131,7 @@ def evaluate(test_langs, srl_type, base_model_name, run_name, models_dir, result
             print(
                 f"WARNING: Fine-tuned model not found at {best_model_dir}. Falling back to ZERO-SHOT on {base_model_name}.")
             model_to_load = base_model_name
+            is_zero_shot = True
     tokenizer = AutoTokenizer.from_pretrained(model_to_load)
     tokenizer = get_tokenizer(tokenizer)
     if tokenizer.pad_token_id is None:
@@ -145,6 +147,7 @@ def evaluate(test_langs, srl_type, base_model_name, run_name, models_dir, result
     model.eval()
 
     all_results = []
+    test_langs = ['EN', 'ZH', 'ES', 'FR']
     for test_lang in test_langs:
         print(f"\nEvaluating on {test_lang} test set...")
         test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
@@ -212,12 +215,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Gemma 3 Fine-tuning for SRL")
     parser.add_argument("--action", type=str, required=True, choices=['train', 'eval'], help="Execution mode")
     parser.add_argument("--srl-type", type=str, required=True, choices=['dependency', 'span'], help="Type of SRL task")
-    parser.add_argument("--langs", nargs='+', required=True, help="List of languages (e.g., EN-s ZH-s)")
-    parser.add_argument("--zero-shot", action="store_true", help="Force zero-shot evaluation on base model")
+    parser.add_argument("--langs", nargs='*', default=[], help="List of languages (e.g., EN-s ZH-s) Required for train, optional for eval (triggers zero-shot)")
     args = parser.parse_args()
+    if args.action == 'train' and not args.langs:
+        parser.error("--langs must be provided when action is 'train'")
     MODEL_NAME = "google/gemma-3-1b-it"
-    train_name = "_".join(args.langs)
-    RUN_NAME = f"{args.srl_type}_{train_name}_gemma3_1B"
+    if args.langs:
+        train_name = "_".join(args.langs)
+        RUN_NAME = f"{args.srl_type}_{train_name}_gemma3_1B"
+    else:
+        # Graceful handling for zero-shot run tracking
+        RUN_NAME = f"{args.srl_type}_zeroshot_gemma3_1B"
     MODELS_DIR = "gemma_models/"
     RESULTS_DIR = "gemma_results/"
     os.makedirs(MODELS_DIR, exist_ok=True)
@@ -226,4 +234,4 @@ if __name__ == '__main__':
     if args.action == 'train':
         train(args.langs, args.srl_type, MODEL_NAME, RUN_NAME, MODELS_DIR)
     elif args.action == 'eval':
-        evaluate(args.langs, args.srl_type, MODEL_NAME, RUN_NAME, MODELS_DIR, RESULTS_DIR, is_zero_shot=args.zero_shot)
+        evaluate(args.langs, args.srl_type, MODEL_NAME, RUN_NAME, MODELS_DIR, RESULTS_DIR)
