@@ -27,16 +27,9 @@ os.environ["WANDB_PROJECT"] = "mt0-srl-finetuning"
 
 def make_preprocess(tokenizer_, max_length=256):
     def preprocess_(batch):
-        map_langs_ = {"EN": "en",
-                      'ZH': 'zh',
-                      "FR": 'fr',
-                      "ES": "es"
-                      }
         model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
-        for src, lang, tgt in zip(batch["input"], batch["lang"], batch["output"]):
-            # mt5/mt0 use text prefix to indicate language, differently from mBART that uses special tokens
-            prompted_src = f"{map_langs_[lang]}: {src}"
-            encoded = tokenizer_(prompted_src, truncation=True, padding=False, max_length=max_length)
+        for src, tgt in zip(batch["input"], batch["output"]):
+            encoded = tokenizer_(src, truncation=True, padding=False, max_length=max_length)
             labels = tokenizer_(text_target=tgt, truncation=True, padding=False, max_length=max_length)
             model_inputs["input_ids"].append(encoded["input_ids"])
             model_inputs["attention_mask"].append(encoded["attention_mask"])
