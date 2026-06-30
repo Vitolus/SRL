@@ -8,7 +8,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
 )
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
+from accelerate import Accelerator
 from evaluation import get_tokenizer, prepare_compute_metrics
 from tqdm.auto import tqdm
 import wandb
@@ -25,8 +26,15 @@ os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
 # Gemma instruction models should perform best when wrapped in their native conversational template.
 def apply_chat_template(example, is_training=True):
-    # Modify the system/user instruction prompt below to match your exact SRL task phrasing
-    prompt = f"<start_of_turn>user\nPerform Semantic Role Labeling on this sentence:\n{example['input']}<end_of_turn>\n<start_of_turn>model\n"
+    # Strict prompt engineering to prevent conversational fluff
+    prompt = (
+        "<bos><start_of_turn>user\n"
+        "You are a strict Semantic Role Labeling (SRL) system. "
+        "Output ONLY the sentence with the correct SRL tags applied. "
+        "Do not include any conversational text, explanations, or introductory phrases.\n\n"
+        f"Sentence: {example['input']}<end_of_turn>"
+        "<start_of_turn>model\n"
+    )
     result = {"prompt": prompt}
     if is_training:
         result["completion"] = f"{example['output']}<end_of_turn>"
@@ -42,10 +50,11 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         tokenizer.pad_token_id = tokenizer.eos_token_id
     # Right padding is optimal for causal LM training
     tokenizer.padding_side = "right"
+    accelerator = Accelerator()
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.float16,
-        device_map="auto" if not dist.is_initialized() else None
+        device_map={"": accelerator.local_process_index}
     )
     model.resize_token_embeddings(len(tokenizer))
     train_datasets = []
@@ -69,6 +78,19 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     train_ds = combined_train.map(lambda x: apply_chat_template(x, is_training=True))
     val_ds = combined_val.map(lambda x: apply_chat_template(x, is_training=True))
 
+    # Explicitly tell the collator where the model's answer begins
+    response_template = "<start_of_turn>model\n"
+    collator = DataCollatorForCompletionOnlyLM(response_template=response_template, tokenizer=tokenizer)
+
+    # Because we use skip_prepare_dataset=True, we must manually tokenize the dataset before passing it to the trainer.
+    def tokenize_function(example):
+        full_text = example["prompt"] + example["completion"]
+        return tokenizer(full_text, truncation=True, max_length=256)
+
+    train_ds = train_ds.map(tokenize_function, batched=True, remove_columns=train_ds.column_names)
+    val_ds = val_ds.map(tokenize_function, batched=True, remove_columns=val_ds.column_names)
+
+
     training_args = SFTConfig(
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
@@ -78,22 +100,27 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name,
-        learning_rate=0.0009981416500547528,
+        learning_rate=2e-4,
         weight_decay=0.01,
         num_train_epochs=5,
         save_total_limit=1,
         load_best_model_at_end=True,
         fp16=True, # Gemma trains best in bf16
+        bf16=False,
         optim="adamw_bnb_8bit",
+        use_liger_kernel=True,
+        max_grad_norm=1.0,
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
-        completion_only_loss=True,
+        completion_only_loss=False, # We will handle this explicitly in the collator
         max_length=256,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5,
-        loss_type="chunked_nll",
-        gradient_checkpointing_kwargs={"use_reentrant": False}
+        # loss_type="nll", # TODO: only if defaults to chunked
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        ddp_find_unused_parameters=False,
+        dataset_kwargs={"skip_prepare_dataset": True}
     )
 
     # SFTTrainer handles the causal LM masking and formatting automatically
@@ -102,6 +129,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
+        data_collator=collator,
         processing_class=tokenizer
     )
 
@@ -138,11 +166,11 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = 'left'
-
+    accelerator = Accelerator()
     model = AutoModelForCausalLM.from_pretrained(
         model_to_load,
         torch_dtype=torch.float16,
-        device_map="auto"
+        device_map={"": accelerator.local_process_index}
     )
     model.resize_token_embeddings(len(tokenizer))
     model.eval()
@@ -157,59 +185,60 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                 name=f"{run_name}_{eval_mode_str}_{test_lang}",
                 reinit=True  # Required to start a new run in the same script
             )
-        print(f"\nEvaluating on {test_lang} test set...")
-        test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
-        raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
-        # We need sequential dataset access to properly write CoNLL files
-        test_ds = raw_test["test"]
-        test_ds = test_ds.map(lambda x: apply_chat_template(x, is_training=False))
-        compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer,
-                                                  run_name=f"{run_name}_{test_lang}")
-        all_preds = []
-        all_labels = []
-        batch_size = 8
-        for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
-            batch = test_ds[i:i + batch_size]
-            inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256).to(
-                model.device)
+            print(f"\nEvaluating on {test_lang} test set...")
+            test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
+            raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
+            # We need sequential dataset access to properly write CoNLL files
+            test_ds = raw_test["test"]
+            test_ds = test_ds.map(lambda x: apply_chat_template(x, is_training=False))
+            compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer,
+                                                      run_name=f"{run_name}_{test_lang}")
+            all_preds = []
+            all_labels = []
+            batch_size = 8
+            for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
+                batch = test_ds[i:i + batch_size]
+                inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256).to(
+                    model.device)
 
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=128,
-                    do_sample=False,  # Greedy decoding for structured tasks
-                    pad_token_id=tokenizer.eos_token_id
-                )
-            # Extract only the newly generated tokens
-            prompt_lengths = inputs["input_ids"].shape[1]
-            generated_tokens = outputs[:, prompt_lengths:].cpu().numpy()
-            # Tokenize labels so we can feed them into compute_metrics
-            labels = tokenizer(batch["output"], return_tensors="pt", padding=True, truncation=True,
-                               max_length=128).input_ids.cpu().numpy()
-            for p, l in zip(generated_tokens, labels):
-                all_preds.append(p)
-                all_labels.append(l)
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=128,
+                        do_sample=False,  # Greedy decoding for structured tasks
+                        pad_token_id=tokenizer.eos_token_id
+                    )
+                # Extract only the newly generated tokens
+                prompt_lengths = inputs["input_ids"].shape[1]
+                generated_tokens = outputs[:, prompt_lengths:].cpu().numpy()
+                # Tokenize labels so we can feed them into compute_metrics
+                labels = tokenizer(batch["output"], return_tensors="pt", padding=True, truncation=True,
+                                   max_length=128).input_ids.cpu().numpy()
+                for p, l in zip(generated_tokens, labels):
+                    all_preds.append(p)
+                    all_labels.append(l)
 
-        # Pad tokens arrays to their local max length using standard pad tokens
-        max_pred_len = max(len(p) for p in all_preds)
-        max_label_len = max(len(l) for l in all_labels)
-        padded_preds = np.full((len(all_preds), max_pred_len), tokenizer.pad_token_id, dtype=np.int64)
-        padded_labels = np.full((len(all_labels), max_label_len), -100,
-                                dtype=np.int64)  # evaluation.py expects labels to have -100 padding
-        for idx, (p, l) in enumerate(zip(all_preds, all_labels)):
-            padded_preds[idx, :len(p)] = p
-            padded_labels[idx, :len(l)] = l
-        metrics_dict = compute_metrics((padded_preds, padded_labels))
-        row = {
-            "srl_type": srl_type,
-            "mode": "zero_shot" if model_to_load == base_model_name else "eval",
-            "test_lang": test_lang,
-            "model": model_to_load,
-            **metrics_dict
-        }
-        all_results.append(row)
-        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            # Pad tokens arrays to their local max length using standard pad tokens
+            max_pred_len = max(len(p) for p in all_preds)
+            max_label_len = max(len(l) for l in all_labels)
+            padded_preds = np.full((len(all_preds), max_pred_len), tokenizer.pad_token_id, dtype=np.int64)
+            padded_labels = np.full((len(all_labels), max_label_len), -100,
+                                    dtype=np.int64)  # evaluation.py expects labels to have -100 padding
+            for idx, (p, l) in enumerate(zip(all_preds, all_labels)):
+                padded_preds[idx, :len(p)] = p
+                padded_labels[idx, :len(l)] = l
+            metrics_dict = compute_metrics((padded_preds, padded_labels))
+            row = {
+                "srl_type": srl_type,
+                "mode": "zero_shot" if model_to_load == base_model_name else "eval",
+                "test_lang": test_lang,
+                "model": model_to_load,
+                **metrics_dict
+            }
+            all_results.append(row)
             wandb.finish()
+        else:
+            pass
     # Output file handling isolated to Main GPU
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         df = pd.DataFrame(all_results)
@@ -219,7 +248,9 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         results_path = os.path.join(run_results_dir, f"{run_name}_{eval_mode_str}_results.csv")
         df.to_csv(results_path, index=False)
         print(f"\nEvaluation completed. Results saved to {results_path}")
-        wandb.finish()
+    # Forces all GPUs to wait here until Rank 0 finishes generating and writing files.
+    # Prevents torchrun from crashing the process group prematurely.
+    accelerator.wait_for_everyone()
 
 
 if __name__ == '__main__':
