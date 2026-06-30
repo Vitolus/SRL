@@ -24,21 +24,30 @@ if 'src' not in sys.path:
 os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
 
-# Gemma instruction models should perform best when wrapped in their native conversational template.
-def apply_chat_template(example, is_training=True):
-    # Strict prompt engineering to prevent conversational fluff
-    prompt = (
-        "<bos><start_of_turn>user\n"
-        "You are a strict Semantic Role Labeling (SRL) system. "
-        "Output ONLY the sentence with the correct SRL tags applied. "
-        "Do not include any conversational text, explanations, or introductory phrases.\n\n"
-        f"Sentence: {example['input']}<end_of_turn>"
-        "<start_of_turn>model\n"
-    )
-    result = {"prompt": prompt}
-    if is_training:
-        result["completion"] = f"{example['output']}<end_of_turn>"
-    return result
+def make_chat_template(tokenizer):
+    def apply_chat_formatter(example, is_training=True):
+        # Use the dictionary format as recommended by Gemma 3 documentation
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "You are a strict Semantic Role Labeling (SRL) system. "
+                    "Output ONLY the sentence with the correct SRL tags applied. "
+                    "Do not include any conversational text, explanations, or introductory phrases.\n\n"
+                    f"Sentence: {example['input']}"
+                )
+            }
+        ]
+        # Generate the evaluation prompt
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        result = {"prompt": prompt}
+        # Generate the full conversational text for training
+        if is_training:
+            messages.append({"role": "model", "content": example['output']})
+            full_text = tokenizer.apply_chat_template(messages, tokenize=False)
+            result["full_text"] = full_text
+        return result
+    return apply_chat_formatter
 
 
 def train(train_langs, srl_type, model_name, run_name, models_dir):
@@ -75,8 +84,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
                 loaded_files.add(data_file)
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
-    train_ds = combined_train.map(lambda x: apply_chat_template(x, is_training=True))
-    val_ds = combined_val.map(lambda x: apply_chat_template(x, is_training=True))
+    train_ds = combined_train.map(lambda x: make_chat_template(tokenizer)(x, is_training=True))
+    val_ds = combined_val.map(lambda x: make_chat_template(tokenizer)(x, is_training=True))
 
     # Explicitly tell the collator where the model's answer begins
     response_template = "<start_of_turn>model\n"
@@ -84,8 +93,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
 
     # Because we use skip_prepare_dataset=True, we must manually tokenize the dataset before passing it to the trainer.
     def tokenize_function(example):
-        full_text = example["prompt"] + example["completion"]
-        return tokenizer(full_text, truncation=True, max_length=256)
+        return tokenizer(example["full_text"], truncation=True, max_length=256, add_special_tokens=False)
 
     train_ds = train_ds.map(tokenize_function, batched=True, remove_columns=train_ds.column_names)
     val_ds = val_ds.map(tokenize_function, batched=True, remove_columns=val_ds.column_names)
@@ -190,7 +198,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
             # We need sequential dataset access to properly write CoNLL files
             test_ds = raw_test["test"]
-            test_ds = test_ds.map(lambda x: apply_chat_template(x, is_training=False))
+            test_ds = test_ds.map(lambda x: make_chat_template(tokenizer)(x, is_training=False))
             compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer,
                                                       run_name=f"{run_name}_{test_lang}")
             all_preds = []
@@ -198,7 +206,8 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             batch_size = 8
             for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
                 batch = test_ds[i:i + batch_size]
-                inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256).to(
+                inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256,
+                                   add_special_tokens=False).to(
                     model.device)
 
                 with torch.no_grad():
