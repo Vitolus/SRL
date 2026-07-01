@@ -61,6 +61,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     accelerator = Accelerator()
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        attn_implementation="eager",
         torch_dtype=torch.float16,
         device_map={"": accelerator.local_process_index}
     )
@@ -125,6 +126,9 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         dataset_kwargs={"skip_prepare_dataset": True}
     )
 
+    for param in model.parameters():
+        if param.requires_grad:
+            param.data = param.data.float()
     # SFTTrainer handles the causal LM masking and formatting automatically
     trainer = SFTTrainer(
         model=model,
@@ -169,6 +173,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     accelerator = Accelerator()
     model = AutoModelForCausalLM.from_pretrained(
         model_to_load,
+        attn_implementation="eager",
         torch_dtype=torch.float16,
         device_map={"": accelerator.local_process_index}
     )
