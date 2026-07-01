@@ -62,8 +62,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         attn_implementation="eager",
-        torch_dtype=torch.float32,
-        device_map={"": accelerator.local_process_index}
+        dtype=torch.float32,
+        device_map="auto"
     )
     model.resize_token_embeddings(len(tokenizer))
     train_datasets = []
@@ -98,7 +98,6 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        # TODO: apply pipeline parallelism (HF naive model) to slise the model to the gpus and salvage memory
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
         logging_dir="logs",
@@ -123,7 +122,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         neftune_noise_alpha=5,
         # loss_type="nll", # TODO: only if defaults to chunked
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        ddp_find_unused_parameters=False,
+        # ddp_find_unused_parameters=False,
         dataset_kwargs={"skip_prepare_dataset": True}
     )
 
@@ -172,8 +171,8 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     model = AutoModelForCausalLM.from_pretrained(
         model_to_load,
         attn_implementation="eager",
-        torch_dtype=torch.float32,
-        device_map={"": accelerator.local_process_index}
+        dtype=torch.float32,
+        device_map="auto"
     )
     model.resize_token_embeddings(len(tokenizer))
     model.eval()

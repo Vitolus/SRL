@@ -53,6 +53,6 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Run using torchrun natively pointing to gemma_finetune.py
-torchrun --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT ./src/gemma_finetune.py --action $ACTION --srl-type $SRL_TYPE $LANG_ARG
+python ./src/gemma_finetune.py --action $ACTION --srl-type $SRL_TYPE $LANG_ARG
 
 exit
