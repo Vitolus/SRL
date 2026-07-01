@@ -62,7 +62,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         attn_implementation="eager",
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
         device_map={"": accelerator.local_process_index}
     )
     model.resize_token_embeddings(len(tokenizer))
@@ -98,8 +98,9 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=4,
+        # TODO: apply pipeline parallelism (HF naive model) to slise the model to the gpus and salvage memory
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=1,
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name,
@@ -111,7 +112,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         fp16=True, # Gemma trains best in bf16
         bf16=False,
         optim="adamw_bnb_8bit",
-        use_liger_kernel=True,
+        use_liger_kernel=False,
         max_grad_norm=1.0,
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
@@ -126,9 +127,6 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         dataset_kwargs={"skip_prepare_dataset": True}
     )
 
-    for param in model.parameters():
-        if param.requires_grad:
-            param.data = param.data.float()
     # SFTTrainer handles the causal LM masking and formatting automatically
     trainer = SFTTrainer(
         model=model,
@@ -174,7 +172,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     model = AutoModelForCausalLM.from_pretrained(
         model_to_load,
         attn_implementation="eager",
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,
         device_map={"": accelerator.local_process_index}
     )
     model.resize_token_embeddings(len(tokenizer))
@@ -199,7 +197,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                                                       run_name=f"{run_name}_{test_lang}")
             all_preds = []
             all_labels = []
-            batch_size = 8
+            batch_size = 1
             for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
                 batch = test_ds[i:i + batch_size]
                 inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256,
