@@ -88,8 +88,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     val_ds = combined_val.map(lambda x: make_chat_template(tokenizer)(x, is_training=True))
 
     # Explicitly tell the collator where the model's answer begins
-    response_template = "<start_of_turn>model\n"
-    collator = DataCollatorForCompletionOnlyLM(response_template=response_template, tokenizer=tokenizer)
+    response_template_ids = tokenizer.encode("<start_of_turn>model\n", add_special_tokens=False)
+    collator = DataCollatorForCompletionOnlyLM(response_template=response_template_ids, tokenizer=tokenizer)
 
     # Because we use skip_prepare_dataset=True, we must manually tokenize the dataset before passing it to the trainer.
     def tokenize_function(example):
