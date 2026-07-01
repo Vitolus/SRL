@@ -1,14 +1,13 @@
-import os, gc, argparse, json, sys, warnings
+import os, gc, argparse, sys, warnings
 import pandas as pd
 import numpy as np
 import torch
-import torch.distributed as dist
 from datasets import load_dataset, concatenate_datasets
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
 )
-from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer, SFTConfig
 from accelerate import Accelerator
 from evaluation import get_tokenizer, prepare_compute_metrics
 from tqdm.auto import tqdm
@@ -87,17 +86,12 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     train_ds = combined_train.map(lambda x: make_chat_template(tokenizer)(x, is_training=True))
     val_ds = combined_val.map(lambda x: make_chat_template(tokenizer)(x, is_training=True))
 
-    # Explicitly tell the collator where the model's answer begins
-    response_template_ids = tokenizer.encode("<start_of_turn>model\n", add_special_tokens=False)
-    collator = DataCollatorForCompletionOnlyLM(response_template=response_template_ids, tokenizer=tokenizer)
-
     # Because we use skip_prepare_dataset=True, we must manually tokenize the dataset before passing it to the trainer.
     def tokenize_function(example):
         return tokenizer(example["full_text"], truncation=True, max_length=256, add_special_tokens=False)
 
     train_ds = train_ds.map(tokenize_function, batched=True, remove_columns=train_ds.column_names)
     val_ds = val_ds.map(tokenize_function, batched=True, remove_columns=val_ds.column_names)
-
 
     training_args = SFTConfig(
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
@@ -120,7 +114,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         max_grad_norm=1.0,
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
-        completion_only_loss=False, # We will handle this explicitly in the collator
+        completion_only_loss=True,
         max_length=256,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
@@ -137,7 +131,6 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        data_collator=collator,
         processing_class=tokenizer
     )
 
