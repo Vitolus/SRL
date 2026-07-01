@@ -155,7 +155,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
 def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, results_dir):
     is_zero_shot = len(train_langs) == 0
     best_model_dir = os.path.join(models_dir, f"{run_name}_best")
-    # Resolve which model to load based on the flag or availability
+    # Resolve which model to load (Fail fast if fine-tuned model is missing)
     if is_zero_shot:
         print(f"--- Running ZERO-SHOT Evaluation on base model: {base_model_name} ---")
         model_to_load = base_model_name
@@ -164,10 +164,9 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             print(f"--- Running Evaluation on fine-tuned model: {best_model_dir} ---")
             model_to_load = best_model_dir
         else:
-            print(
-                f"WARNING: Fine-tuned model not found at {best_model_dir}. Falling back to ZERO-SHOT on {base_model_name}.")
-            model_to_load = base_model_name
-            is_zero_shot = True
+            raise FileNotFoundError(
+                f"CRITICAL ERROR: Expected to evaluate fine-tuned model, but it was not found at {best_model_dir}. "
+            )
     tokenizer = AutoTokenizer.from_pretrained(model_to_load)
     tokenizer = get_tokenizer(tokenizer)
     if tokenizer.pad_token_id is None:
@@ -187,10 +186,9 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     test_langs = ['EN', 'ZH', 'ES', 'FR']
     for test_lang in test_langs:
         if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-            eval_mode_str = "zeroshot" if is_zero_shot else "_".join(train_langs)
             wandb.init(
                 project=os.environ.get("WANDB_PROJECT", "gemma-srl-finetuning"),
-                name=f"{run_name}_{eval_mode_str}_{test_lang}",
+                name=f"{run_name}_eval_{test_lang}",
                 reinit=True  # Required to start a new run in the same script
             )
             print(f"\nEvaluating on {test_lang} test set...")
@@ -253,8 +251,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         df = pd.DataFrame(all_results)
         run_results_dir = os.path.join(results_dir, run_name)
         os.makedirs(run_results_dir, exist_ok=True)
-        eval_mode_str = "zeroshot" if is_zero_shot else "_".join(train_langs)
-        results_path = os.path.join(run_results_dir, f"{run_name}_{eval_mode_str}_results.csv")
+        results_path = os.path.join(run_results_dir, f"{run_name}_results.csv")
         df.to_csv(results_path, index=False)
         print(f"\nEvaluation completed. Results saved to {results_path}")
     # Forces all GPUs to wait here until Rank 0 finishes generating and writing files.
@@ -273,15 +270,14 @@ if __name__ == '__main__':
     MODEL_NAME = "google/gemma-3-1b-it"
     if args.langs:
         train_name = "_".join(args.langs)
-        RUN_NAME = f"{args.srl_type}_{train_name}_gemma3_1B"
     else:
-        # Graceful handling for zero-shot run tracking
-        RUN_NAME = f"{args.srl_type}_zeroshot_gemma3_1B"
-    MODELS_DIR = "gemma_models/"
-    RESULTS_DIR = "gemma_results/"
+        train_name = "zeroshot"
+    RUN_NAME = f"{args.srl_type}_{train_name}_gemma3"
+    MODELS_DIR = "gemma3_models/"
+    RESULTS_DIR = "results/"
     os.makedirs(MODELS_DIR, exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs} ---")
+    print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs if args.langs else 'ZERO-SHOT'} ---")
     if args.action == 'train':
         train(args.langs, args.srl_type, MODEL_NAME, RUN_NAME, MODELS_DIR)
     elif args.action == 'eval':
