@@ -98,8 +98,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=1,
-        per_device_eval_batch_size=1,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name,
@@ -166,6 +166,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    # Left padding is required for batched causal inference
     tokenizer.padding_side = 'left'
     accelerator = Accelerator()
     model = AutoModelForCausalLM.from_pretrained(
@@ -179,8 +180,9 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
 
     all_results = []
     test_langs = ['EN', 'ZH', 'ES', 'FR']
-    for test_lang in test_langs:
-        if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+    # Output file handling and heavy metric evaluation isolated to Main GPU
+    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        for test_lang in test_langs:
             wandb.init(
                 project=os.environ.get("WANDB_PROJECT", "gemma-srl-finetuning"),
                 name=f"{run_name}_eval_{test_lang}",
@@ -192,16 +194,16 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             # We need sequential dataset access to properly write CoNLL files
             test_ds = raw_test["test"]
             test_ds = test_ds.map(lambda x: make_chat_template(tokenizer)(x, is_training=False))
+            # Binding the test dataset context for evaluation.py
             compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer,
                                                       run_name=f"{run_name}_{test_lang}")
             all_preds = []
             all_labels = []
-            batch_size = 1
+            batch_size = 4
             for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
                 batch = test_ds[i:i + batch_size]
                 inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256,
-                                   add_special_tokens=False).to(
-                    model.device)
+                                   add_special_tokens=False).to(model.device)
 
                 with torch.no_grad():
                     outputs = model.generate(
@@ -213,22 +215,27 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                 # Extract only the newly generated tokens
                 prompt_lengths = inputs["input_ids"].shape[1]
                 generated_tokens = outputs[:, prompt_lengths:].cpu().numpy()
-                # Tokenize labels so we can feed them into compute_metrics
+                # Tokenize labels with add_special_tokens=False to avoid embedding <bos> tokens into Exact Match tests
                 labels = tokenizer(batch["output"], return_tensors="pt", padding=True, truncation=True,
-                                   max_length=128).input_ids.cpu().numpy()
+                                   max_length=128, add_special_tokens=False).input_ids.cpu().numpy()
                 for p, l in zip(generated_tokens, labels):
-                    all_preds.append(p)
-                    all_labels.append(l)
+                    # Strip left/right padding safely before saving
+                    p_clean = [tok for tok in p if tok != tokenizer.pad_token_id]
+                    l_clean = [tok for tok in l if tok != tokenizer.pad_token_id]
+                    all_preds.append(p_clean)
+                    all_labels.append(l_clean)
 
-            # Pad tokens arrays to their local max length using standard pad tokens
-            max_pred_len = max(len(p) for p in all_preds)
-            max_label_len = max(len(l) for l in all_labels)
+            # Pad tokens arrays globally to their maximum length
+            max_pred_len = max(len(p) for p in all_preds) if all_preds else 0
+            max_label_len = max(len(l) for l in all_labels) if all_labels else 0
+
             padded_preds = np.full((len(all_preds), max_pred_len), tokenizer.pad_token_id, dtype=np.int64)
-            padded_labels = np.full((len(all_labels), max_label_len), -100,
-                                    dtype=np.int64)  # evaluation.py expects labels to have -100 padding
+            # Metrics computation expects labels to have -100 padding to skip decoding empty space
+            padded_labels = np.full((len(all_labels), max_label_len), -100, dtype=np.int64)
             for idx, (p, l) in enumerate(zip(all_preds, all_labels)):
                 padded_preds[idx, :len(p)] = p
                 padded_labels[idx, :len(l)] = l
+            # Fire the helper metrics engine with tuple matching Trainer format
             metrics_dict = compute_metrics((padded_preds, padded_labels))
             row = {
                 "srl_type": srl_type,
@@ -239,10 +246,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             }
             all_results.append(row)
             wandb.finish()
-        else:
-            pass
-    # Output file handling isolated to Main GPU
-    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        # Write files sequentially after the main loop
         df = pd.DataFrame(all_results)
         run_results_dir = os.path.join(results_dir, run_name)
         os.makedirs(run_results_dir, exist_ok=True)
@@ -252,6 +256,10 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     # Forces all GPUs to wait here until Rank 0 finishes generating and writing files.
     # Prevents torchrun from crashing the process group prematurely.
     accelerator.wait_for_everyone()
+    # Cleanup memory
+    del model, tokenizer
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 if __name__ == '__main__':
