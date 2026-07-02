@@ -424,75 +424,75 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer, run_name=None):
 # ---------------------------
 # Main
 # ---------------------------
-if __name__ == "__main__":
-    checkpoint_dir = "./mbart_model/"
-    all_results = []
-    map_langs = {"EN": "en_XX",
-                 'ZH': 'zh_CN',
-                 "FR": 'fr_XX',
-                 "ES": "es_XX"
-                 }
-    for srl_type in ["dependency", 'span']:
-        for langs in [['EN'], ['ZH'], ['EN','ZH']]:
-            for test_lang in ['ZH', 'ES', 'EN', 'FR']:
-                torch.cuda.empty_cache()
-                wandb.init(project="mbart-testing",settings=wandb.Settings(x_disable_stats=True),name=f"{srl_type}_{'_'.join(langs)}_{test_lang}_FT")
-                model = MBartForConditionalGeneration.from_pretrained(
-                    checkpoint_dir + '_'.join(langs) + "_" + srl_type + "_FT_best",local_files_only=True)
-                tokenizer = MBart50Tokenizer.from_pretrained(checkpoint_dir + '_'.join(langs) + "_" + srl_type + "_FT_best",local_files_only=True)
-                print("Tokenizer vocab size:", len(tokenizer))
-                print("Model embedding size:", model.get_input_embeddings().weight.size(0))
-                if len(tokenizer) != model.get_input_embeddings().weight.size(0):
-                    tokenizer = get_tokenizer(tokenizer)
-                    print("Tokenizer vocab size:", len(tokenizer))
-                    print("Model embedding size:", model.get_input_embeddings().weight.size(0))
-                assert (len(tokenizer) == model.get_input_embeddings().weight.size(0))
-                # Load dataset (TSV with 4 columns: id, input, output, lang)
-                print("Tokenizer vocab size:", len(tokenizer))
-                print("Model embedding size:", model.get_input_embeddings().weight.size(0))
-                data_files = {
-                    "test": [f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"]
-                }
-                #model.config.forced_bos_token_id = tokenizer.lang_code_to_id[map_langs[test_lang]]
-
-                gen_config = GenerationConfig(**model.generation_config.to_dict())
-                gen_config.forced_bos_token_id = tokenizer.lang_code_to_id[map_langs[test_lang]]
-                model.generation_config = gen_config
-
-                raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
-                preprocess = make_preprocess(tokenizer)
-                test_ds = raw_datasets["test"].map(preprocess, batched=True).shuffle(seed=42)
-                #test_ds = raw_datasets["test"].select(range(20)).map(preprocess, batched=True)
-                compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
-                # Training arguments
-                args = Seq2SeqTrainingArguments(
-                    output_dir="./eval_results",
-                    per_device_eval_batch_size=10,
-                    predict_with_generate=True,
-                    generation_max_length=1024,
-                    logging_dir="./logs",
-                    report_to=["wandb"],   # <--- log to wandb
-                    no_cuda=False,
-                )
-                # Trainer
-                trainer = Seq2SeqTrainer(
-                    model=model,
-                    args=args,
-                    eval_dataset=test_ds,
-                    processing_class=tokenizer,
-                    data_collator=DataCollatorForSeq2Seq(tokenizer, model),
-                    compute_metrics=compute_metrics
-                )
-                # Train & evaluate
-                results = trainer.evaluate()
-                row = {
-                    "srl_type": srl_type,
-                    "train_lang": '_'.join(langs),
-                    "test_lang": test_lang,
-                    **results
-                }
-                all_results.append(row)
-                print(f"Results for {checkpoint_dir + '_'.join(langs+[srl_type, test_lang]) }: {results}")
-                df = pd.DataFrame(all_results)
-                df.to_csv("./results/FT_results.csv", index=False)
-                wandb.finish()
+# if __name__ == "__main__":
+#     checkpoint_dir = "./mbart_model/"
+#     all_results = []
+#     map_langs = {"EN": "en_XX",
+#                  'ZH': 'zh_CN',
+#                  "FR": 'fr_XX',
+#                  "ES": "es_XX"
+#                  }
+#     for srl_type in ["dependency", 'span']:
+#         for langs in [['EN'], ['ZH'], ['EN','ZH']]:
+#             for test_lang in ['ZH', 'ES', 'EN', 'FR']:
+#                 torch.cuda.empty_cache()
+#                 wandb.init(project="mbart-testing",settings=wandb.Settings(x_disable_stats=True),name=f"{srl_type}_{'_'.join(langs)}_{test_lang}_FT")
+#                 model = MBartForConditionalGeneration.from_pretrained(
+#                     checkpoint_dir + '_'.join(langs) + "_" + srl_type + "_FT_best",local_files_only=True)
+#                 tokenizer = MBart50Tokenizer.from_pretrained(checkpoint_dir + '_'.join(langs) + "_" + srl_type + "_FT_best",local_files_only=True)
+#                 print("Tokenizer vocab size:", len(tokenizer))
+#                 print("Model embedding size:", model.get_input_embeddings().weight.size(0))
+#                 if len(tokenizer) != model.get_input_embeddings().weight.size(0):
+#                     tokenizer = get_tokenizer(tokenizer)
+#                     print("Tokenizer vocab size:", len(tokenizer))
+#                     print("Model embedding size:", model.get_input_embeddings().weight.size(0))
+#                 assert (len(tokenizer) == model.get_input_embeddings().weight.size(0))
+#                 # Load dataset (TSV with 4 columns: id, input, output, lang)
+#                 print("Tokenizer vocab size:", len(tokenizer))
+#                 print("Model embedding size:", model.get_input_embeddings().weight.size(0))
+#                 data_files = {
+#                     "test": [f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"]
+#                 }
+#                 #model.config.forced_bos_token_id = tokenizer.lang_code_to_id[map_langs[test_lang]]
+#
+#                 gen_config = GenerationConfig(**model.generation_config.to_dict())
+#                 gen_config.forced_bos_token_id = tokenizer.lang_code_to_id[map_langs[test_lang]]
+#                 model.generation_config = gen_config
+#
+#                 raw_datasets = load_dataset("csv", data_files=data_files, delimiter="\t")
+#                 preprocess = make_preprocess(tokenizer)
+#                 test_ds = raw_datasets["test"].map(preprocess, batched=True).shuffle(seed=42)
+#                 #test_ds = raw_datasets["test"].select(range(20)).map(preprocess, batched=True)
+#                 compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer)
+#                 # Training arguments
+#                 args = Seq2SeqTrainingArguments(
+#                     output_dir="./eval_results",
+#                     per_device_eval_batch_size=10,
+#                     predict_with_generate=True,
+#                     generation_max_length=1024,
+#                     logging_dir="./logs",
+#                     report_to=["wandb"],   # <--- log to wandb
+#                     no_cuda=False,
+#                 )
+#                 # Trainer
+#                 trainer = Seq2SeqTrainer(
+#                     model=model,
+#                     args=args,
+#                     eval_dataset=test_ds,
+#                     processing_class=tokenizer,
+#                     data_collator=DataCollatorForSeq2Seq(tokenizer, model),
+#                     compute_metrics=compute_metrics
+#                 )
+#                 # Train & evaluate
+#                 results = trainer.evaluate()
+#                 row = {
+#                     "srl_type": srl_type,
+#                     "train_lang": '_'.join(langs),
+#                     "test_lang": test_lang,
+#                     **results
+#                 }
+#                 all_results.append(row)
+#                 print(f"Results for {checkpoint_dir + '_'.join(langs+[srl_type, test_lang]) }: {results}")
+#                 df = pd.DataFrame(all_results)
+#                 df.to_csv("./results/FT_results.csv", index=False)
+#                 wandb.finish()
