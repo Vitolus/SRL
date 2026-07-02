@@ -407,12 +407,13 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer, suffix= "", run_
 
         #wandb.log({"SCORES": f1})
         if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+            run_dir = os.path.join('results', run_name) if run_name else 'results'
+            os.makedirs(run_dir, exist_ok=True)
+            tsv_file_path = os.path.join(run_dir, f"{srl_type}{suffix}_{'_'.join(langs)}.tsv")
             final_df = pd.DataFrame(
                 {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds,
                  'Actual Text': decoded_labels})
-            run_results_dir = os.path.join(run_dir, f"{srl_type}{suffix}_{'_'.join(langs)}.tsv")
-            os.makedirs(run_results_dir, exist_ok=True)
-            final_df.to_csv(run_results_dir, sep='\n')
+            final_df.to_csv(tsv_file_path, sep='\n') # TODO: should it be sep='\t, index=False ?
             print('Output Files generated for review')
             if wandb.run is not None:
                 tbl = wandb.Table(data=final_df)
