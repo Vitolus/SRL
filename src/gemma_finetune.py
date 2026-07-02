@@ -101,8 +101,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
                 loaded_files.add(data_file)
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
-    train_ds = combined_train.map(lambda x: make_chat_template(tokenizer)(x, is_training=True))
-    val_ds = combined_val.map(lambda x: make_chat_template(tokenizer)(x, is_training=True))
+    train_ds = combined_train.map(lambda x: make_chat_template(tokenizer, srl_type)(x, is_training=True))
+    val_ds = combined_val.map(lambda x: make_chat_template(tokenizer, srl_type)(x, is_training=True))
 
     # Because we use skip_prepare_dataset=True, we must manually tokenize the dataset before passing it to the trainer.
     def tokenize_function(example):
@@ -210,7 +210,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
             # We need sequential dataset access to properly write CoNLL files
             test_ds = raw_test["test"]
-            test_ds = test_ds.map(lambda x: make_chat_template(tokenizer)(x, is_training=False))
+            test_ds = test_ds.map(lambda x: make_chat_template(tokenizer, srl_type)(x, is_training=False))
             # Binding the test dataset context for evaluation.py
             compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, suffix="_eval",
                                                       run_name=f"{run_name}_{test_lang}")
