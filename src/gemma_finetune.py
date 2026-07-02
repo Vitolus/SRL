@@ -237,6 +237,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                 padded_labels[idx, :len(l)] = l
             # Fire the helper metrics engine with tuple matching Trainer format
             metrics_dict = compute_metrics((padded_preds, padded_labels))
+            wandb.log(metrics_dict)
             row = {
                 "srl_type": srl_type,
                 "mode": "zero_shot" if model_to_load == base_model_name else "eval",
