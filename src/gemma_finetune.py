@@ -9,7 +9,7 @@ from transformers import (
 )
 from trl import SFTTrainer, SFTConfig
 from accelerate import Accelerator
-from evaluation import get_tokenizer, prepare_compute_metrics
+from evaluation import get_tokenizer, prepare_compute_metrics, va_roles
 from tqdm.auto import tqdm
 import wandb
 
@@ -23,28 +23,45 @@ if 'src' not in sys.path:
 os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
 
-def make_chat_template(tokenizer):
+def make_chat_template(tokenizer, srl_type):
+    roles = ", ".join(va_roles)
     def apply_chat_formatter(example, is_training=True):
+        if srl_type == "span":
+            format_instructions = (
+                "3. Identify the arguments corresponding to that predicate. Wrap the ENTIRE argument phrase in a tag formatted exactly as: <P0:ROLE_NAME>full argument text</P0:ROLE_NAME>\n"
+            )
+        elif srl_type == "dependency":
+            format_instructions = (
+                "3. Identify the arguments corresponding to that predicate. Wrap ONLY the syntactic head word of the argument in a tag formatted exactly as: <P0:ROLE_NAME>head_word</P0:ROLE_NAME>\n"
+            )
+        else:
+            raise ValueError(f"Unsupported SRL type: {srl_type}")
+        prompt_text = (
+            "You are a strict Semantic Role Labeling (SRL) system.\n"
+            "ALLOWED ROLES:\n"
+            f"{roles}\n\n"
+            "OUTPUT FORMAT INSTRUCTIONS:\n"
+            "1. You must output the original sentence modified ONLY by XML-style tags wrapping predicates and arguments.\n"
+            "2. Identify the main predicate. Wrap the predicate word in a tag formatted exactly as: <P0:PREDICATE_LEMMA>word</P0:PREDICATE_LEMMA>\n"
+            f"{format_instructions}\n"
+            "4. The 'P0' prefix must match across the predicate and its corresponding arguments in increasing number.\n"
+            "5. Do not include any introductory text, conversational pleasantries, explanations, or trailing remarks. Output ONLY the tagged sentence.\n\n"
+            f"Sentence: {example['input']}"
+        )
+
         # Use the dictionary format as recommended by Gemma 3 documentation
         messages = [
             {
                 "role": "user",
-                "content": (
-                    "You are a strict Semantic Role Labeling (SRL) system. "
-                    "Output ONLY the sentence with the correct SRL tags applied. "
-                    "Do not include any conversational text, explanations, or introductory phrases.\n\n"
-                    f"Sentence: {example['input']}"
-                )
+                "content": prompt_text
             }
         ]
         # Generate the evaluation prompt
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        result = {"prompt": prompt}
+        result = {"prompt": tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)}
         # Generate the full conversational text for training
         if is_training:
             messages.append({"role": "model", "content": example['output']})
-            full_text = tokenizer.apply_chat_template(messages, tokenize=False)
-            result["full_text"] = full_text
+            result["full_text"] = tokenizer.apply_chat_template(messages, tokenize=False)
         return result
     return apply_chat_formatter
 
