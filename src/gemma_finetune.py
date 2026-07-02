@@ -195,7 +195,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             test_ds = raw_test["test"]
             test_ds = test_ds.map(lambda x: make_chat_template(tokenizer)(x, is_training=False))
             # Binding the test dataset context for evaluation.py
-            compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer,
+            compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, suffix="_eval",
                                                       run_name=f"{run_name}_{test_lang}")
             all_preds = []
             all_labels = []

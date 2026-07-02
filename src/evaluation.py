@@ -354,7 +354,7 @@ def to_conll(actuals, predictions, srl_type, df, langs, run_dir='results'):
 # ---------------------------
 # Simple metrics
 # ---------------------------
-def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer, run_name=None):
+def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer, suffix= "", run_name=None):
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
         if isinstance(predictions, tuple):
@@ -410,7 +410,9 @@ def prepare_compute_metrics(val_ds, srl_type, langs, tokenizer, run_name=None):
             final_df = pd.DataFrame(
                 {'Input Text': val_ds.to_pandas()['input'], 'Generated Text': decoded_preds,
                  'Actual Text': decoded_labels})
-            final_df.to_csv(os.path.join(run_dir, f"{srl_type}_{'_'.join(langs)}.tsv"), sep='\n')
+            run_results_dir = os.path.join(run_dir, f"{srl_type}{suffix}_{'_'.join(langs)}.tsv")
+            os.makedirs(run_results_dir, exist_ok=True)
+            final_df.to_csv(run_results_dir, sep='\n')
             print('Output Files generated for review')
             if wandb.run is not None:
                 tbl = wandb.Table(data=final_df)
