@@ -37,11 +37,11 @@ def make_chat_template(tokenizer, srl_type):
         else:
             raise ValueError(f"Unsupported SRL type: {srl_type}")
         prompt_text = (
-            "You are a strict Semantic Role Labeling (SRL) system.\n"
+            f"You are a strict {srl_type} based Semantic Role Labeling (SRL) system.\n"
             "ALLOWED ROLES:\n"
             f"{roles}\n\n"
             "OUTPUT FORMAT INSTRUCTIONS:\n"
-            "1. You must output the original sentence modified ONLY by XML-style tags wrapping predicates and arguments.\n"
+            "1. You must output ONLY the original sentence modified by XML-style tags wrapping predicates and arguments.\n"
             "2. Identify the main predicate. Wrap the predicate word in a tag formatted exactly as: <P0:PREDICATE_LEMMA>word</P0:PREDICATE_LEMMA>\n"
             f"{format_instructions}\n"
             "4. The 'P0' prefix must match across the predicate and its corresponding arguments in increasing number.\n"
@@ -56,6 +56,8 @@ def make_chat_template(tokenizer, srl_type):
                 "content": prompt_text
             }
         ]
+        # TODO: ho scoperto che la nuova versione di trl ha bisogno di prompt e completion separatamente
+        #  https://huggingface.co/docs/trl/sft_trainer#expected-dataset-type-and-format
         # Generate the evaluation prompt
         result = {"prompt": tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)}
         # Generate the full conversational text for training
