@@ -22,50 +22,38 @@ if 'src' not in sys.path:
 
 os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
-
-def make_chat_template(tokenizer, srl_type):
-    roles = ", ".join(va_roles)
-    def apply_chat_formatter(example, is_training=True):
-        if srl_type == "span":
-            format_instructions = (
-                "3. Identify the arguments corresponding to that predicate. Wrap the ENTIRE argument phrase in a tag formatted exactly as: <P0:ROLE_NAME>full argument text</P0:ROLE_NAME>\n"
-            )
-        elif srl_type == "dependency":
-            format_instructions = (
-                "3. Identify the arguments corresponding to that predicate. Wrap ONLY the syntactic head word of the argument in a tag formatted exactly as: <P0:ROLE_NAME>head_word</P0:ROLE_NAME>\n"
-            )
-        else:
-            raise ValueError(f"Unsupported SRL type: {srl_type}")
-        prompt_text = (
-            f"You are a strict {srl_type} based Semantic Role Labeling (SRL) system.\n"
-            "ALLOWED ROLES:\n"
-            f"{roles}\n\n"
-            "OUTPUT FORMAT INSTRUCTIONS:\n"
-            "1. You must output ONLY the original sentence modified by XML-style tags wrapping predicates and arguments.\n"
-            "2. Identify the main predicate. Wrap the predicate word in a tag formatted exactly as: <P0:PREDICATE_LEMMA>word</P0:PREDICATE_LEMMA>\n"
-            f"{format_instructions}\n"
-            "4. The 'P0' prefix must match across the predicate and its corresponding arguments in increasing number.\n"
-            "5. Do not include any introductory text, conversational pleasantries, explanations, or trailing remarks. Output ONLY the tagged sentence.\n\n"
-            f"Sentence: {example['input']}"
+def prompt_template(example, roles, srl_type):
+    if srl_type == "span":
+        format_instructions = (
+            "3. Identify the arguments corresponding to that predicate. Wrap the ENTIRE argument phrase in a tag formatted exactly as: <P0:ROLE_NAME>full argument text</P0:ROLE_NAME>\n"
         )
+    elif srl_type == "dependency":
+        format_instructions = (
+            "3. Identify the arguments corresponding to that predicate. Wrap ONLY the syntactic head word of the argument in a tag formatted exactly as: <P0:ROLE_NAME>head_word</P0:ROLE_NAME>\n"
+        )
+    else:
+        raise ValueError(f"Unsupported SRL type: {srl_type}")
+    return (
+        f"You are a strict {srl_type} based Semantic Role Labeling (SRL) system.\n"
+        "ALLOWED ROLES:\n"
+        f"{roles}\n\n"
+        "OUTPUT FORMAT INSTRUCTIONS:\n"
+        "1. You must output ONLY the original sentence modified by XML-style tags wrapping predicates and arguments.\n"
+        "2. Identify the main predicate. Wrap the predicate word in a tag formatted exactly as: <P0:PREDICATE_LEMMA>word</P0:PREDICATE_LEMMA>\n"
+        f"{format_instructions}\n"
+        "4. The 'P0' prefix must match across the predicate and its corresponding arguments in increasing number.\n"
+        "5. Do not include any introductory text, conversational pleasantries, explanations, or trailing remarks. Output ONLY the tagged sentence.\n\n"
+        f"Sentence: {example['input']}"
+    )
 
-        # Use the dictionary format as recommended by Gemma 3 documentation
-        messages = [
-            {
-                "role": "user",
-                "content": prompt_text
-            }
-        ]
-        # TODO: ho scoperto che la nuova versione di trl ha bisogno di prompt e completion separatamente
-        #  https://huggingface.co/docs/trl/sft_trainer#expected-dataset-type-and-format
-        # Generate the evaluation prompt
-        result = {"prompt": tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)}
-        # Generate the full conversational text for training
-        if is_training:
-            messages.append({"role": "model", "content": example['output']})
-            result["full_text"] = tokenizer.apply_chat_template(messages, tokenize=False)
-        return result
-    return apply_chat_formatter
+def make_prompt_completion(srl_type):
+    roles = ", ".join(va_roles)
+    def formatter(example):
+        return {
+            "prompt": prompt_template(example, roles, srl_type),
+            "completion": example['output']
+        }
+    return formatter
 
 
 def train(train_langs, srl_type, model_name, run_name, models_dir):
@@ -81,7 +69,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         attn_implementation="eager",
-        dtype=torch.float32,
+        dtype=torch.float32, # torch.float16 crash the trainer?!
         device_map="auto"
     )
     model.resize_token_embeddings(len(tokenizer))
@@ -103,15 +91,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
                 loaded_files.add(data_file)
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
-    train_ds = combined_train.map(lambda x: make_chat_template(tokenizer, srl_type)(x, is_training=True))
-    val_ds = combined_val.map(lambda x: make_chat_template(tokenizer, srl_type)(x, is_training=True))
-
-    # Because we use skip_prepare_dataset=True, we must manually tokenize the dataset before passing it to the trainer.
-    def tokenize_function(example):
-        return tokenizer(example["full_text"], truncation=True, max_length=256, add_special_tokens=False)
-
-    train_ds = train_ds.map(tokenize_function, batched=True, remove_columns=train_ds.column_names)
-    val_ds = val_ds.map(tokenize_function, batched=True, remove_columns=val_ds.column_names)
+    train_ds = combined_train.map(make_prompt_completion(srl_type), remove_columns=combined_train.column_names)
+    val_ds = combined_val.map(make_prompt_completion(srl_type), remove_columns=combined_val.column_names)
 
     training_args = SFTConfig(
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
@@ -134,15 +115,16 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         max_grad_norm=1.0,
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
-        completion_only_loss=True,
+        completion_only_loss=True,  # Automatically calculates loss ONLY on the completion
+        dataset_text_field=None,  # Explicitly set to None for prompt-completion columns
+        packing=False,  # Set to False to ensure clean token masking
         max_length=256,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5,
         # loss_type="nll", # TODO: only if defaults to chunked
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        gradient_checkpointing_kwargs={"use_reentrant": False}
         # ddp_find_unused_parameters=False,
-        dataset_kwargs={"skip_prepare_dataset": True}
     )
 
     # SFTTrainer handles the causal LM masking and formatting automatically
@@ -191,7 +173,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     model = AutoModelForCausalLM.from_pretrained(
         model_to_load,
         attn_implementation="eager",
-        dtype=torch.float32,
+        dtype=torch.float16,
         device_map="auto"
     )
     model.resize_token_embeddings(len(tokenizer))
@@ -199,8 +181,24 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
 
     all_results = []
     test_langs = ['EN', 'ZH', 'ES', 'FR']
+
+    # Inline mapping function replacing the deleted make_chat_template approach
+    def prepare_test_sample(example):
+        # We handle zero-shot and finetuned identically via the model's native chat template configuration
+        messages = [{"role": "user", "content": prompt_template(example, ", ".join(va_roles), srl_type)}]
+        templated_prompt = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False
+        )
+        return {"prompt": templated_prompt, "output": example["output"]}
+
     # Output file handling and heavy metric evaluation isolated to Main GPU
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+        terminators = [
+            tokenizer.eos_token_id,
+            tokenizer.convert_tokens_to_ids("<end_of_turn>")
+        ]
         for test_lang in test_langs:
             wandb.init(
                 project=os.environ.get("WANDB_PROJECT", "gemma-srl-finetuning"),
@@ -212,7 +210,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
             # We need sequential dataset access to properly write CoNLL files
             test_ds = raw_test["test"]
-            test_ds = test_ds.map(lambda x: make_chat_template(tokenizer, srl_type)(x, is_training=False))
+            test_ds = test_ds.map(prepare_test_sample)
             # Binding the test dataset context for evaluation.py
             compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, suffix="_eval",
                                                       run_name=f"{run_name}_{test_lang}")
@@ -229,7 +227,10 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                         **inputs,
                         max_new_tokens=128,
                         do_sample=False,  # Greedy decoding for structured tasks
-                        pad_token_id=tokenizer.eos_token_id
+                        pad_token_id=tokenizer.eos_token_id,
+                        eos_token_id=terminators,
+                        repetition_penalty=1.15
+
                     )
                 # Extract only the newly generated tokens
                 prompt_lengths = inputs["input_ids"].shape[1]
@@ -259,7 +260,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             wandb.log(metrics_dict)
             row = {
                 "srl_type": srl_type,
-                "mode": "zero_shot" if model_to_load == base_model_name else "eval",
+                "mode": "zero_shot" if is_zero_shot else "eval",
                 "test_lang": test_lang,
                 "model": model_to_load,
                 **metrics_dict
