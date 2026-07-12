@@ -3,24 +3,19 @@ import pandas as pd
 import numpy as np
 import torch
 from datasets import load_dataset, concatenate_datasets
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-)
+from unsloth import FastModel
+from unsloth.chat_templates import get_chat_template, train_on_responses_only
 from trl import SFTTrainer, SFTConfig
 from accelerate import Accelerator
-from tqdm.auto import tqdm
-from unsloth import FastModel
-import wandb
 from evaluation import get_tokenizer, prepare_compute_metrics, va_roles
+from tqdm.auto import tqdm
+import wandb
 
 warnings.filterwarnings("ignore", category=FutureWarning)
-
 if os.path.basename(os.getcwd()) == 'src':
     os.chdir('..')
 if 'src' not in sys.path:
     sys.path.append('src')
-
 os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
 def prompt_template(example, roles, srl_type):
@@ -47,13 +42,16 @@ def prompt_template(example, roles, srl_type):
         f"Sentence: {example['input']}"
     )
 
-def make_prompt_completion(srl_type):
+def make_unsloth_chat_format(srl_type, tokenizer):
     roles = ", ".join(va_roles)
     def formatter(example):
-        return {
-            "prompt": prompt_template(example, roles, srl_type),
-            "completion": example['output']
-        }
+        # Convert text columns into standard Hugging Face conversation format
+        messages = [
+            {"role": "user", "content": prompt_template(example, roles, srl_type)},
+            {"role": "model", "content": example['output']}
+        ]
+        # Compile it using the patched template string
+        return {"text": tokenizer.apply_chat_template(messages, tokenize=False)}
     return formatter
 
 
@@ -64,17 +62,16 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     model, tokenizer = FastModel.from_pretrained(
         model_name=model_name,
         max_seq_length=max_seq_length,
-        dtype=torch.float16,  # Force FP16 for Tesla T4
-        load_in_4bit=False,  # Strictly disable quantization
+        dtype=torch.float16, # Force FP16 for Tesla T4
+        load_in_4bit=False,  # Using full FP16, disable quantization
+    )
+    # Inject native Gemma 3 token structures into the tokenizer
+    tokenizer = get_chat_template(
+        tokenizer,
+        chat_template="gemma3",
     )
 
     tokenizer = get_tokenizer(tokenizer)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-    # Right padding is optimal for causal LM training
-    tokenizer.padding_side = "right"
-
     model.resize_token_embeddings(len(tokenizer))
     # Unsloth PEFT/LoRA Setup (Crucial for T4 FP16 stability)
     model = FastModel.get_peft_model(
@@ -82,9 +79,9 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         r=16,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_alpha=16,
-        lora_dropout=0,  # Unsloth optimizes dropout = 0
+        lora_dropout=0, # Unsloth optimizes dropout = 0
         bias="none",
-        use_gradient_checkpointing="unsloth",  # Unsloth's native VRAM saver
+        use_gradient_checkpointing="unsloth", # Unsloth's native VRAM saver
         random_state=42,
     )
     train_datasets = []
@@ -105,8 +102,10 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
                 loaded_files.add(data_file)
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
-    train_ds = combined_train.map(make_prompt_completion(srl_type), remove_columns=combined_train.column_names)
-    val_ds = combined_val.map(make_prompt_completion(srl_type), remove_columns=combined_val.column_names)
+    # Map into a standard "text" field containing the templated conversation
+    formatter = make_unsloth_chat_format(srl_type, tokenizer)
+    train_ds = combined_train.map(formatter, remove_columns=combined_train.column_names)
+    val_ds = combined_val.map(formatter, remove_columns=combined_val.column_names)
 
     training_args = SFTConfig(
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
@@ -127,9 +126,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         optim="adamw_bnb_8bit",
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
-        completion_only_loss=True, # Automatically calculates loss ONLY on the completion
-        dataset_text_field=None, # Explicitly set to None for prompt-completion columns
-        packing=False, # Set to False to ensure clean token masking
+        dataset_text_field="text",
+        packing=False,
         max_length=max_seq_length,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
@@ -144,6 +142,13 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         train_dataset=train_ds,
         eval_dataset=val_ds,
         processing_class=tokenizer
+    )
+
+    # Apply Unsloth's native prompt masking engine
+    trainer = train_on_responses_only(
+        trainer,
+        instruction_part="<start_of_turn>user\n",
+        response_part="<start_of_turn>model\n",
     )
 
     print(f"Starting SFT for {run_name}...")
@@ -178,6 +183,10 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         max_seq_length=256,
         dtype=torch.float16,
         load_in_4bit=False,
+    )
+    tokenizer = get_chat_template(
+        tokenizer,
+        chat_template="gemma3",
     )
     tokenizer = get_tokenizer(tokenizer)
     if tokenizer.pad_token_id is None:
