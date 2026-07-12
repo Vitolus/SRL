@@ -3,11 +3,11 @@ import pandas as pd
 import numpy as np
 import torch
 from datasets import load_dataset, concatenate_datasets
-from unsloth import FastModel
+from unsloth import FastModel, add_new_tokens
 from unsloth.chat_templates import get_chat_template, train_on_responses_only
 from trl import SFTTrainer, SFTConfig
 from accelerate import Accelerator
-from evaluation import get_tokenizer, prepare_compute_metrics, va_roles
+from evaluation import prepare_compute_metrics, va_roles, get_VA_arg_struct
 from tqdm.auto import tqdm
 import wandb
 
@@ -62,17 +62,13 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     model, tokenizer = FastModel.from_pretrained(
         model_name=model_name,
         max_seq_length=max_seq_length,
-        dtype=torch.float16, # Force FP16 for Tesla T4
+        dtype=None, # Unsloth automatically resolves the best dtype for GPU
         load_in_4bit=False,  # Using full FP16, disable quantization
     )
     # Inject native Gemma 3 token structures into the tokenizer
-    tokenizer = get_chat_template(
-        tokenizer,
-        chat_template="gemma3",
-    )
-
-    tokenizer = get_tokenizer(tokenizer)
-    model.resize_token_embeddings(len(tokenizer))
+    tokenizer = get_chat_template(tokenizer, chat_template="gemma3")
+    frames = [k for k in get_VA_arg_struct()]
+    add_new_tokens(model, tokenizer, new_tokens= frames + va_roles)
     # Unsloth PEFT/LoRA Setup (Crucial for T4 FP16 stability)
     model = FastModel.get_peft_model(
         model,
@@ -121,8 +117,6 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         num_train_epochs=5,
         save_total_limit=1,
         load_best_model_at_end=True,
-        fp16=True, # Gemma trains best in bf16, unsloth resolve for old gpu
-        bf16=False,
         optim="adamw_bnb_8bit",
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
@@ -131,8 +125,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         max_length=max_seq_length,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
-        neftune_noise_alpha=5,
-        # gradient_checkpointing_kwargs={"use_reentrant": False}
+        neftune_noise_alpha=5
     )
 
     # SFTTrainer handles the causal LM masking and formatting automatically
@@ -177,24 +170,22 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             raise FileNotFoundError(
                 f"CRITICAL ERROR: Expected to evaluate fine-tuned model, but it was not found at {best_model_dir}. "
             )
+    # Load base model structure first to align tensor coordinates safely
+    actual_model_name = base_model_name if not is_zero_shot else model_to_load
     # Unsloth Loading for Evaluation
     model, tokenizer = FastModel.from_pretrained(
-        model_name=model_to_load,
+        model_name=actual_model_name,
         max_seq_length=256,
-        dtype=torch.float16,
+        dtype=None,
         load_in_4bit=False,
     )
-    tokenizer = get_chat_template(
-        tokenizer,
-        chat_template="gemma3",
-    )
-    tokenizer = get_tokenizer(tokenizer)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-    # Left padding is required for batched causal inference
-    tokenizer.padding_side = 'left'
-    model.resize_token_embeddings(len(tokenizer))
+    tokenizer = get_chat_template(tokenizer, chat_template="gemma3")
+    frames = [k for k in get_VA_arg_struct()]
+    add_new_tokens(model, tokenizer, new_tokens=frames + va_roles)
+    # If evaluating a fine-tuned run, manually overlay your saved LoRA adapters now
+    if not is_zero_shot:
+        print(f"Loading LoRA adapters from {best_model_dir} onto expanded base model...")
+        model.load_adapter(best_model_dir)
     # Enable Native 2x Faster Inference
     FastModel.for_inference(model)
     accelerator = Accelerator()
