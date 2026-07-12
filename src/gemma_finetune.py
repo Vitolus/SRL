@@ -9,9 +9,10 @@ from transformers import (
 )
 from trl import SFTTrainer, SFTConfig
 from accelerate import Accelerator
-from evaluation import get_tokenizer, prepare_compute_metrics, va_roles
 from tqdm.auto import tqdm
+from unsloth import FastModel
 import wandb
+from evaluation import get_tokenizer, prepare_compute_metrics, va_roles
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -57,22 +58,35 @@ def make_prompt_completion(srl_type):
 
 
 def train(train_langs, srl_type, model_name, run_name, models_dir):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    max_seq_length = 256
+
+    # Unsloth Model Loading
+    model, tokenizer = FastModel.from_pretrained(
+        model_name=model_name,
+        max_seq_length=max_seq_length,
+        dtype=torch.float16,  # Force FP16 for Tesla T4
+        load_in_4bit=False,  # Strictly disable quantization
+    )
+
     tokenizer = get_tokenizer(tokenizer)
-    # Gemma does not have a native pad token; it is standard to use the EOS token
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     # Right padding is optimal for causal LM training
     tokenizer.padding_side = "right"
-    accelerator = Accelerator()
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        attn_implementation="eager",
-        dtype=torch.float32, # torch.float16 crash the trainer?!
-        device_map="auto"
-    )
+
     model.resize_token_embeddings(len(tokenizer))
+    # Unsloth PEFT/LoRA Setup (Crucial for T4 FP16 stability)
+    model = FastModel.get_peft_model(
+        model,
+        r=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        lora_alpha=16,
+        lora_dropout=0,  # Unsloth optimizes dropout = 0
+        bias="none",
+        use_gradient_checkpointing="unsloth",  # Unsloth's native VRAM saver
+        random_state=42,
+    )
     train_datasets = []
     val_datasets = []
     loaded_files = set()
@@ -108,23 +122,19 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         num_train_epochs=5,
         save_total_limit=1,
         load_best_model_at_end=True,
-        fp16=True, # Gemma trains best in bf16
+        fp16=True, # Gemma trains best in bf16, unsloth resolve for old gpu
         bf16=False,
         optim="adamw_bnb_8bit",
-        use_liger_kernel=False,
-        max_grad_norm=1.0,
         gradient_accumulation_steps=8,
         gradient_checkpointing=True,
-        completion_only_loss=True,  # Automatically calculates loss ONLY on the completion
-        dataset_text_field=None,  # Explicitly set to None for prompt-completion columns
-        packing=False,  # Set to False to ensure clean token masking
-        max_length=256,
+        completion_only_loss=True, # Automatically calculates loss ONLY on the completion
+        dataset_text_field=None, # Explicitly set to None for prompt-completion columns
+        packing=False, # Set to False to ensure clean token masking
+        max_length=max_seq_length,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5,
-        # loss_type="nll", # TODO: only if defaults to chunked
-        gradient_checkpointing_kwargs={"use_reentrant": False}
-        # ddp_find_unused_parameters=False,
+        # gradient_checkpointing_kwargs={"use_reentrant": False}
     )
 
     # SFTTrainer handles the causal LM masking and formatting automatically
@@ -139,7 +149,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     print(f"Starting SFT for {run_name}...")
     trainer.train()
     best_model_dir = os.path.join(models_dir, f"{run_name}_best")
-    trainer.save_model(best_model_dir)
+    trainer.save_model(best_model_dir) # Saves the lightweight LoRA adapters safely
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
         tokenizer.save_pretrained(best_model_dir)
     del model, trainer
@@ -162,27 +172,26 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             raise FileNotFoundError(
                 f"CRITICAL ERROR: Expected to evaluate fine-tuned model, but it was not found at {best_model_dir}. "
             )
-    tokenizer = AutoTokenizer.from_pretrained(model_to_load)
+    # Unsloth Loading for Evaluation
+    model, tokenizer = FastModel.from_pretrained(
+        model_name=model_to_load,
+        max_seq_length=256,
+        dtype=torch.float16,
+        load_in_4bit=False,
+    )
     tokenizer = get_tokenizer(tokenizer)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     # Left padding is required for batched causal inference
     tokenizer.padding_side = 'left'
-    accelerator = Accelerator()
-    model = AutoModelForCausalLM.from_pretrained(
-        model_to_load,
-        attn_implementation="eager",
-        dtype=torch.float16,
-        device_map="auto"
-    )
     model.resize_token_embeddings(len(tokenizer))
-    model.eval()
-
+    # Enable Native 2x Faster Inference
+    FastModel.for_inference(model)
+    accelerator = Accelerator()
     all_results = []
     test_langs = ['EN', 'ZH', 'ES', 'FR']
 
-    # Inline mapping function replacing the deleted make_chat_template approach
     def prepare_test_sample(example):
         # We handle zero-shot and finetuned identically via the model's native chat template configuration
         messages = [{"role": "user", "content": prompt_template(example, ", ".join(va_roles), srl_type)}]
@@ -195,28 +204,27 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
 
     # Output file handling and heavy metric evaluation isolated to Main GPU
     if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        terminators = [
-            tokenizer.eos_token_id,
-            tokenizer.convert_tokens_to_ids("<end_of_turn>")
-        ]
         for test_lang in test_langs:
             wandb.init(
                 project=os.environ.get("WANDB_PROJECT", "gemma-srl-finetuning"),
                 name=f"{run_name}_eval_{test_lang}",
-                reinit=True  # Required to start a new run in the same script
+                reinit=True # Required to start a new run in the same script
             )
             print(f"\nEvaluating on {test_lang} test set...")
             test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
             raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
             # We need sequential dataset access to properly write CoNLL files
-            test_ds = raw_test["test"]
-            test_ds = test_ds.map(prepare_test_sample)
+            test_ds = raw_test["test"].map(prepare_test_sample)
             # Binding the test dataset context for evaluation.py
             compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, suffix="_eval",
                                                       run_name=f"{run_name}_{test_lang}")
             all_preds = []
             all_labels = []
             batch_size = 4
+            terminators = [
+                tokenizer.eos_token_id,
+                tokenizer.convert_tokens_to_ids("<end_of_turn>")
+            ]
             for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
                 batch = test_ds[i:i + batch_size]
                 inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256,
@@ -226,11 +234,10 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                     outputs = model.generate(
                         **inputs,
                         max_new_tokens=128,
-                        do_sample=False,  # Greedy decoding for structured tasks
+                        do_sample=False, # Greedy decoding for structured tasks
                         pad_token_id=tokenizer.eos_token_id,
                         eos_token_id=terminators,
                         repetition_penalty=1.15
-
                     )
                 # Extract only the newly generated tokens
                 prompt_lengths = inputs["input_ids"].shape[1]
@@ -244,11 +251,9 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                     l_clean = [tok for tok in l if tok != tokenizer.pad_token_id]
                     all_preds.append(p_clean)
                     all_labels.append(l_clean)
-
             # Pad tokens arrays globally to their maximum length
             max_pred_len = max(len(p) for p in all_preds) if all_preds else 0
             max_label_len = max(len(l) for l in all_labels) if all_labels else 0
-
             padded_preds = np.full((len(all_preds), max_pred_len), tokenizer.pad_token_id, dtype=np.int64)
             # Metrics computation expects labels to have -100 padding to skip decoding empty space
             padded_labels = np.full((len(all_labels), max_label_len), -100, dtype=np.int64)
@@ -267,6 +272,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             }
             all_results.append(row)
             wandb.finish()
+
         # Write files sequentially after the main loop
         df = pd.DataFrame(all_results)
         run_results_dir = os.path.join(results_dir, run_name)
@@ -274,10 +280,10 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         results_path = os.path.join(run_results_dir, f"{run_name}_results.csv")
         df.to_csv(results_path, index=False)
         print(f"\nEvaluation completed. Results saved to {results_path}")
+
     # Forces all GPUs to wait here until Rank 0 finishes generating and writing files.
     # Prevents torchrun from crashing the process group prematurely.
     accelerator.wait_for_everyone()
-    # Cleanup memory
     del model, tokenizer
     gc.collect()
     torch.cuda.empty_cache()
