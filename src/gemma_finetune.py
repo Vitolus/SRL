@@ -21,11 +21,11 @@ os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 def prompt_template(example, roles, srl_type):
     if srl_type == "span":
         format_instructions = (
-            "3. Identify the arguments corresponding to that predicate. Wrap the ENTIRE argument phrase in a tag formatted exactly as: <P0:ROLE_NAME>full argument text</P0:ROLE_NAME>\n"
+            "3. Identify the arguments corresponding to each predicate. Wrap the ENTIRE argument phrase in an XML tag formatted as: <Pi:ROLE_NAME>argument text</Pi:ROLE_NAME>, where 'i' matches the integer index of its corresponding predicate.\n"
         )
     elif srl_type == "dependency":
         format_instructions = (
-            "3. Identify the arguments corresponding to that predicate. Wrap ONLY the syntactic head word of the argument in a tag formatted exactly as: <P0:ROLE_NAME>head_word</P0:ROLE_NAME>\n"
+            "3. Identify the arguments corresponding to each predicate. Wrap ONLY the syntactic head word of the argument in an XML tag formatted as: <Pi:ROLE_NAME>head_word</Pi:ROLE_NAME>, where 'i' matches the integer index of its corresponding predicate.\n"
         )
     else:
         raise ValueError(f"Unsupported SRL type: {srl_type}")
@@ -34,11 +34,11 @@ def prompt_template(example, roles, srl_type):
         "ALLOWED ROLES:\n"
         f"{roles}\n\n"
         "OUTPUT FORMAT INSTRUCTIONS:\n"
-        "1. You must output ONLY the original sentence modified by XML-style tags wrapping predicates and arguments.\n"
-        "2. Identify the main predicate. Wrap the predicate word in a tag formatted exactly as: <P0:PREDICATE_LEMMA>word</P0:PREDICATE_LEMMA>\n"
+        "1. Output ONLY the original sentence modified by XML tags wrapping the predicates and arguments.\n"
+        "2. Identify every main predicate. Wrap each predicate word in a tag formatted as: <Pi:SEMANTIC_FRAME>word</Pi:SEMANTIC_FRAME>, where 'i' is the 0-indexed integer order of the predicate (P0 for the first predicate, P1 for the second, etc.).\n"
         f"{format_instructions}\n"
-        "4. The 'P0' prefix must match across the predicate and its corresponding arguments in increasing number.\n"
-        "5. Do not include any introductory text, conversational pleasantries, explanations, or trailing remarks. Output ONLY the tagged sentence.\n\n"
+        "4. The index prefix (e.g., P0, P1) must match exactly between a specific predicate and all of its arguments.\n"
+        "5. Do not include introductory text, conversational pleasantries, explanations, or trailing remarks. Output ONLY the tagged sentence.\n\n"
         f"Sentence: {example['input']}"
     )
 
