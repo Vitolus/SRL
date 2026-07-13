@@ -88,10 +88,11 @@ def clean_linearization_span(text: str) -> str:
             tok = tok.replace("</P", "</P")
 
             if not VALID_TAG.match(tok):
-                m = re.match(r"<\/?P\d+:([A-Z0-9_]+)", tok)
+                m = re.match(r"<\/?P(\d+):([A-Z0-9_]+)", tok)
                 if m:
-                    role = m.group(1)
-                    tok = f"</P0:{role}>" if tok.startswith("</") else f"<P0:{role}>"
+                    p_idx = m.group(1)
+                    role = m.group(2)
+                    tok = f"</P{p_idx}:{role}>" if tok.startswith("</") else f"<P{p_idx}:{role}>"
 
             if VALID_TAG.match(tok):
                 cleaned_tokens.append(tok)
