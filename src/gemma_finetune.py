@@ -120,7 +120,6 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         gradient_checkpointing=True,
         dataset_text_field="text",
         packing=False,
-        max_length=None,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5
@@ -130,6 +129,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     trainer = SFTTrainer(
         model=model,
         args=training_args,
+        max_length=None,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         processing_class=tokenizer
