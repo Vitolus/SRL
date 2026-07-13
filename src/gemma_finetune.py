@@ -72,7 +72,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         model,
         r=16,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=16,
+        lora_alpha=32,
         lora_dropout=0, # Unsloth optimizes dropout = 0
         bias="none",
         use_gradient_checkpointing="unsloth", # Unsloth's native VRAM saver
@@ -105,25 +105,26 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=4,
+        per_device_train_batch_size=8,
         per_device_eval_batch_size=4,
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name,
         learning_rate=2e-4,
         weight_decay=0.01,
-        num_train_epochs=5,
+        num_train_epochs=3,
         save_total_limit=1,
         load_best_model_at_end=True,
         optim="adamw_bnb_8bit",
-        gradient_accumulation_steps=8,
+        gradient_accumulation_steps=4,
         gradient_checkpointing=True,
         dataset_text_field="text",
         packing=True,
         packing_strategy="bfd",
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
-        neftune_noise_alpha=5
+        neftune_noise_alpha=5,
+        ddp_find_unused_parameters=False
     )
 
     # SFTTrainer handles the causal LM masking and formatting automatically
@@ -200,32 +201,35 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         )
         return {"prompt": templated_prompt, "output": example["output"]}
 
-    # Output file handling and heavy metric evaluation isolated to Main GPU
-    if int(os.environ.get("LOCAL_RANK", "0")) == 0:
-        for test_lang in test_langs:
+    for test_lang in test_langs:
+        if accelerator.is_main_process:
             wandb.init(
                 project=os.environ.get("WANDB_PROJECT", "gemma-srl-finetuning"),
                 name=f"{run_name}_eval_{test_lang}",
                 reinit=True # Required to start a new run in the same script
             )
             print(f"\nEvaluating on {test_lang} test set...")
-            test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
-            raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
-            # We need sequential dataset access to properly write CoNLL files
-            test_ds = raw_test["test"].map(prepare_test_sample)
-            # Binding the test dataset context for evaluation.py
-            compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, suffix="_eval",
-                                                      run_name=f"{run_name}_{test_lang}")
-            all_preds = []
-            all_labels = []
-            batch_size = 4
+        test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
+        raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
+        # We need sequential dataset access to properly write CoNLL files
+        test_ds = raw_test["test"].map(prepare_test_sample)
+        with accelerator.split_between_processes(list(range(len(test_ds)))) as local_indices:
+            local_preds = []
+            local_labels = []
+            batch_size = 8
             terminators = [
                 tokenizer.eos_token_id,
                 tokenizer.convert_tokens_to_ids("<end_of_turn>")
             ]
-            for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
-                batch = test_ds[i:i + batch_size]
-                inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=512,
+
+            # Each GPU generates ONLY its local slice of data
+            for i in tqdm(range(0, len(local_indices), batch_size), desc=f"Gen Rank {accelerator.process_index}",
+                          disable=not accelerator.is_main_process):
+                batch_idx = local_indices[i:i + batch_size]
+                batch_prompts = [test_ds[int(idx)]["prompt"] for idx in batch_idx]
+                batch_outputs = [test_ds[int(idx)]["output"] for idx in batch_idx]
+
+                inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=512,
                                    add_special_tokens=False).to(model.device)
 
                 with torch.no_grad():
@@ -239,27 +243,44 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                     )
                 # Extract only the newly generated tokens
                 prompt_lengths = inputs["input_ids"].shape[1]
-                generated_tokens = outputs[:, prompt_lengths:].cpu().numpy()
+                generated_tokens = outputs[:, prompt_lengths:]
                 # Tokenize labels with add_special_tokens=False to avoid embedding <bos> tokens into Exact Match tests
-                labels = tokenizer(batch["output"], return_tensors="pt", padding=True, truncation=True,
-                                   max_length=128, add_special_tokens=False).input_ids.cpu().numpy()
-                for p, l in zip(generated_tokens, labels):
-                    # Strip left/right padding safely before saving
-                    p_clean = [tok for tok in p if tok != tokenizer.pad_token_id]
-                    l_clean = [tok for tok in l if tok != tokenizer.pad_token_id]
-                    all_preds.append(p_clean)
-                    all_labels.append(l_clean)
+                labels = tokenizer(batch_outputs, return_tensors="pt", padding=True, truncation=True, max_length=128,
+                                   add_special_tokens=False).input_ids.to(model.device)
+
+                # Standardize tensor shapes across GPUs before gathering
+                padded_preds = accelerator.pad_across_processes(generated_tokens, dim=1,
+                                                                pad_index=tokenizer.pad_token_id)
+                padded_labels = accelerator.pad_across_processes(labels, dim=1, pad_index=tokenizer.pad_token_id)
+
+                # Gather all data back to GPU 0 safely
+                gathered_preds = accelerator.gather_for_metrics(padded_preds)
+                gathered_labels = accelerator.gather_for_metrics(padded_labels)
+
+                if accelerator.is_main_process:
+                    local_preds.extend(gathered_preds.cpu().numpy())
+                    local_labels.extend(gathered_labels.cpu().numpy())
+
+        # Compute metrics and write results exclusively on GPU 0
+        if accelerator.is_main_process:
+            compute_metrics = prepare_compute_metrics(test_ds, srl_type, [test_lang], tokenizer, suffix="_eval",
+                                                      run_name=f"{run_name}_{test_lang}")
+
+            all_preds = []
+            all_labels = []
+            for p, l in zip(local_preds, local_labels):
+                all_preds.append([tok for tok in p if tok != tokenizer.pad_token_id])
+                all_labels.append([tok for tok in l if tok != tokenizer.pad_token_id])
             # Pad tokens arrays globally to their maximum length
-            max_pred_len = max(len(p) for p in all_preds) if all_preds else 0
-            max_label_len = max(len(l) for l in all_labels) if all_labels else 0
-            padded_preds = np.full((len(all_preds), max_pred_len), tokenizer.pad_token_id, dtype=np.int64)
+            max_pred_len = max((len(p) for p in all_preds), default=0)
+            max_label_len = max((len(l) for l in all_labels), default=0)
+            final_preds = np.full((len(all_preds), max_pred_len), tokenizer.pad_token_id, dtype=np.int64)
             # Metrics computation expects labels to have -100 padding to skip decoding empty space
-            padded_labels = np.full((len(all_labels), max_label_len), -100, dtype=np.int64)
+            final_labels = np.full((len(all_labels), max_label_len), -100, dtype=np.int64)
             for idx, (p, l) in enumerate(zip(all_preds, all_labels)):
-                padded_preds[idx, :len(p)] = p
-                padded_labels[idx, :len(l)] = l
-            # Fire the helper metrics engine with tuple matching Trainer format
-            metrics_dict = compute_metrics((padded_preds, padded_labels))
+                final_preds[idx, :len(p)] = p
+                final_labels[idx, :len(l)] = l
+            metrics_dict = compute_metrics((final_preds, final_labels))
             wandb.log(metrics_dict)
             row = {
                 "srl_type": srl_type,
@@ -271,7 +292,8 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             all_results.append(row)
             wandb.finish()
 
-        # Write files sequentially after the main loop
+    # Write sequential files natively on the main process
+    if accelerator.is_main_process:
         df = pd.DataFrame(all_results)
         run_results_dir = os.path.join(results_dir, run_name)
         os.makedirs(run_results_dir, exist_ok=True)
