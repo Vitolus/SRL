@@ -56,12 +56,10 @@ def make_unsloth_chat_format(srl_type, tokenizer):
 
 
 def train(train_langs, srl_type, model_name, run_name, models_dir):
-    max_seq_length = 256
-
     # Unsloth Model Loading
     model, tokenizer = FastModel.from_pretrained(
         model_name=model_name,
-        max_seq_length=max_seq_length,
+        max_seq_length=512,
         dtype=None, # Unsloth automatically resolves the best dtype for GPU
         load_in_4bit=False,  # Using full FP16, disable quantization
     )
@@ -122,7 +120,6 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         gradient_checkpointing=True,
         dataset_text_field="text",
         packing=False,
-        max_length=max_seq_length,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5
@@ -175,7 +172,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     # Unsloth Loading for Evaluation
     model, tokenizer = FastModel.from_pretrained(
         model_name=actual_model_name,
-        max_seq_length=256,
+        max_seq_length=512,
         dtype=None,
         load_in_4bit=False,
     )
@@ -227,13 +224,13 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             ]
             for i in tqdm(range(0, len(test_ds), batch_size), desc=f"Generating {test_lang}"):
                 batch = test_ds[i:i + batch_size]
-                inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=256,
+                inputs = tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=512,
                                    add_special_tokens=False).to(model.device)
 
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
-                        max_new_tokens=128,
+                        max_new_tokens=180,
                         do_sample=False, # Greedy decoding for structured tasks
                         pad_token_id=tokenizer.eos_token_id,
                         eos_token_id=terminators,
