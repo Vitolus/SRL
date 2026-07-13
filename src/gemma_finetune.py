@@ -120,6 +120,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         gradient_checkpointing=True,
         dataset_text_field="text",
         packing=False,
+        max_length=None,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5
