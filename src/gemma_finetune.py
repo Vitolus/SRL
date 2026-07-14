@@ -20,28 +20,24 @@ os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
 def prompt_template(example, roles, frames, srl_type):
     if srl_type == "span":
-        format_instructions = (
-            "3. Identify the arguments corresponding to each predicate. Wrap the ENTIRE argument phrase in an XML tag formatted as: <Pi:ROLE_NAME>argument text</Pi:ROLE_NAME>, where 'i' matches the integer index of its corresponding predicate.\n"
-        )
+        format_instructions = "2. Wrap the ENTIRE argument phrase in an XML tag: <Pi:ROLE_NAME>argument text</Pi:ROLE_NAME>."
     elif srl_type == "dependency":
-        format_instructions = (
-            "3. Identify the arguments corresponding to each predicate. Wrap ONLY the syntactic head word of the argument in an XML tag formatted as: <Pi:ROLE_NAME>head_word</Pi:ROLE_NAME>, where 'i' matches the integer index of its corresponding predicate.\n"
-        )
+        format_instructions = "2. Wrap ONLY the syntactic head word of the argument in an XML tag: <Pi:ROLE_NAME>head_word</Pi:ROLE_NAME>."
     else:
         raise ValueError(f"Unsupported SRL type: {srl_type}")
     return (
-        f"You are a strict {srl_type} based Semantic Role Labeling (SRL) system.\n"
+        f"You are a strict {srl_type} Semantic Role Labeling (SRL) system.\n"
         "ALLOWED ROLES:\n"
         f"{roles}\n\n"
         "ALLOWED FRAMES:\n"
         f"{frames}\n\n"
         "OUTPUT FORMAT INSTRUCTIONS:\n"
-        "1. Output ONLY the input sentence modified by XML tags wrapping the predicates and arguments.\n"
-        "2. Identify every main predicate. Wrap each predicate word in a tag formatted as: <Pi:SEMANTIC_FRAME>word</Pi:SEMANTIC_FRAME>, where 'i' is the 0-indexed integer order of the predicate (P0 for the first predicate, P1 for the second, etc.).\n"
+        "1. Identify every main predicate. Wrap each in a tag: <Pi:FRAME>word</Pi:FRAME>, where 'i' is the predicate order (P0, P1, P2).\n"
         f"{format_instructions}\n"
-        "4. The index prefix (e.g., P0, P1) must match exactly between a specific predicate and all of its arguments.\n"
-        "5. Do not include introductory text, conversational pleasantries, explanations, or trailing remarks. Output ONLY the tagged sentence.\n\n"
-        f"Sentence: {example['input']}"
+        "3. The index prefix (P0, P1, etc.) must match exactly between a predicate and its arguments.\n"
+        "4. Output ONLY the final tagged sentence. Do not add any other text.\n\n"
+        f"INPUT:\n{example['input']}\n"
+        "OUTPUT:\n"
     )
 
 def make_unsloth_chat_format(va_frames, srl_type, tokenizer):
@@ -62,7 +58,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     # Unsloth Model Loading
     model, tokenizer = FastModel.from_pretrained(
         model_name=model_name,
-        max_seq_length=1024,
+        max_seq_length=2048,
         dtype=None, # Unsloth automatically resolves the best dtype for GPU
         load_in_4bit=False,  # Using full FP16, disable quantization
     )
@@ -122,7 +118,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         gradient_accumulation_steps=4,
         gradient_checkpointing=True,
         dataset_text_field="text",
-        max_length=1024,
+        max_length=2048,
         packing=True,
         packing_strategy="bfd",
         warmup_ratio=0.1,
@@ -180,16 +176,16 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     # Unsloth Loading for Evaluation
     model, tokenizer = FastModel.from_pretrained(
         model_name=actual_model_name,
-        max_seq_length=1024,
+        max_seq_length=2048,
         dtype=None,
         load_in_4bit=False,
         device_map={'': local_rank}
     )
     tokenizer = get_chat_template(tokenizer, chat_template="gemma3")
     va_frames = [k for k in get_VA_arg_struct()]
-    add_new_tokens(model, tokenizer, new_tokens=va_frames + va_roles)
     # If evaluating a fine-tuned run, manually overlay your saved LoRA adapters now
     if not is_zero_shot:
+        add_new_tokens(model, tokenizer, new_tokens=va_frames + va_roles)
         print(f"Loading LoRA adapters from {best_model_dir} onto expanded base model...")
         model.load_adapter(best_model_dir)
     # Enable Native 2x Faster Inference
@@ -199,7 +195,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
 
     def prepare_test_sample(example):
         # We handle zero-shot and finetuned identically via the model's native chat template configuration
-        messages = [{"role": "user", "content": prompt_template(example, ", ".join(va_roles), srl_type)}]
+        messages = [{"role": "user", "content": prompt_template(example, ", ".join(va_roles), ", ".join(va_frames), srl_type)}]
         templated_prompt = tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -222,7 +218,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         with accelerator.split_between_processes(list(range(len(test_ds)))) as local_indices:
             local_preds = []
             local_labels = []
-            batch_size = 64
+            batch_size = 32
             terminators = [
                 tokenizer.eos_token_id,
                 tokenizer.convert_tokens_to_ids("<end_of_turn>")
@@ -235,13 +231,14 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                 batch_prompts = [test_ds[int(idx)]["prompt"] for idx in batch_idx]
                 batch_outputs = [test_ds[int(idx)]["output"] for idx in batch_idx]
 
-                inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=1024,
+                inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=2048,
                                    add_special_tokens=False).to(model.device)
 
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
-                        max_new_tokens=180,
+                        max_new_tokens=256,
+                        max_length=None,
                         do_sample=False, # Greedy decoding for structured tasks
                         pad_token_id=tokenizer.eos_token_id,
                         eos_token_id=terminators,
@@ -251,7 +248,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                 prompt_lengths = inputs["input_ids"].shape[1]
                 generated_tokens = outputs[:, prompt_lengths:]
                 # Tokenize labels with add_special_tokens=False to avoid embedding <bos> tokens into Exact Match tests
-                labels = tokenizer(batch_outputs, return_tensors="pt", padding=True, truncation=True, max_length=128,
+                labels = tokenizer(batch_outputs, return_tensors="pt", padding=True, truncation=True, max_length=256,
                                    add_special_tokens=False).input_ids.to(model.device)
 
                 # Standardize tensor shapes across GPUs before gathering
