@@ -18,7 +18,7 @@ if 'src' not in sys.path:
     sys.path.append('src')
 os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
-def prompt_template(example, roles, srl_type):
+def prompt_template(example, roles, frames, srl_type):
     if srl_type == "span":
         format_instructions = (
             "3. Identify the arguments corresponding to each predicate. Wrap the ENTIRE argument phrase in an XML tag formatted as: <Pi:ROLE_NAME>argument text</Pi:ROLE_NAME>, where 'i' matches the integer index of its corresponding predicate.\n"
@@ -33,8 +33,10 @@ def prompt_template(example, roles, srl_type):
         f"You are a strict {srl_type} based Semantic Role Labeling (SRL) system.\n"
         "ALLOWED ROLES:\n"
         f"{roles}\n\n"
+        "ALLOWED FRAMES:\n"
+        f"{frames}\n\n"
         "OUTPUT FORMAT INSTRUCTIONS:\n"
-        "1. Output ONLY the original sentence modified by XML tags wrapping the predicates and arguments.\n"
+        "1. Output ONLY the input sentence modified by XML tags wrapping the predicates and arguments.\n"
         "2. Identify every main predicate. Wrap each predicate word in a tag formatted as: <Pi:SEMANTIC_FRAME>word</Pi:SEMANTIC_FRAME>, where 'i' is the 0-indexed integer order of the predicate (P0 for the first predicate, P1 for the second, etc.).\n"
         f"{format_instructions}\n"
         "4. The index prefix (e.g., P0, P1) must match exactly between a specific predicate and all of its arguments.\n"
@@ -42,12 +44,13 @@ def prompt_template(example, roles, srl_type):
         f"Sentence: {example['input']}"
     )
 
-def make_unsloth_chat_format(srl_type, tokenizer):
+def make_unsloth_chat_format(va_frames, srl_type, tokenizer):
+    frames = ", ".join(va_frames)
     roles = ", ".join(va_roles)
     def formatter(example):
         # Convert text columns into standard Hugging Face conversation format
         messages = [
-            {"role": "user", "content": prompt_template(example, roles, srl_type)},
+            {"role": "user", "content": prompt_template(example, roles, frames, srl_type)},
             {"role": "model", "content": example['output']}
         ]
         # Compile it using the patched template string
@@ -59,14 +62,14 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     # Unsloth Model Loading
     model, tokenizer = FastModel.from_pretrained(
         model_name=model_name,
-        max_seq_length=512,
+        max_seq_length=1024,
         dtype=None, # Unsloth automatically resolves the best dtype for GPU
         load_in_4bit=False,  # Using full FP16, disable quantization
     )
     # Inject native Gemma 3 token structures into the tokenizer
     tokenizer = get_chat_template(tokenizer, chat_template="gemma3")
-    frames = [k for k in get_VA_arg_struct()]
-    add_new_tokens(model, tokenizer, new_tokens= frames + va_roles)
+    va_frames = [k for k in get_VA_arg_struct()]
+    add_new_tokens(model, tokenizer, new_tokens= va_frames + va_roles)
     # Unsloth PEFT/LoRA Setup (Crucial for T4 FP16 stability)
     model = FastModel.get_peft_model(
         model,
@@ -97,7 +100,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
     # Map into a standard "text" field containing the templated conversation
-    formatter = make_unsloth_chat_format(srl_type, tokenizer)
+    formatter = make_unsloth_chat_format(va_frames, srl_type, tokenizer)
     train_ds = combined_train.map(formatter, remove_columns=combined_train.column_names)
     val_ds = combined_val.map(formatter, remove_columns=combined_val.column_names)
 
@@ -105,25 +108,26 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
         eval_strategy="epoch",
         save_strategy="epoch",
-        per_device_train_batch_size=8,
+        per_device_train_batch_size=2,
         per_device_eval_batch_size=4,
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name,
-        learning_rate=2e-4,
+        learning_rate=1e-3,
         weight_decay=0.01,
         num_train_epochs=3,
         save_total_limit=1,
         load_best_model_at_end=True,
-        optim="adamw_bnb_8bit",
+        optim="adamw_8bit",
         gradient_accumulation_steps=4,
         gradient_checkpointing=True,
         dataset_text_field="text",
+        max_length=1024,
         packing=True,
         packing_strategy="bfd",
-        warmup_ratio=0.03,
+        warmup_ratio=0.1,
         lr_scheduler_type="cosine",
-        neftune_noise_alpha=5,
+        neftune_noise_alpha=1,
         ddp_find_unused_parameters=False
     )
 
@@ -155,6 +159,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
 
 
 def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, results_dir):
+    accelerator = Accelerator()
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     is_zero_shot = len(train_langs) == 0
     best_model_dir = os.path.join(models_dir, f"{run_name}_best")
     # Resolve which model to load (Fail fast if fine-tuned model is missing)
@@ -174,20 +180,20 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     # Unsloth Loading for Evaluation
     model, tokenizer = FastModel.from_pretrained(
         model_name=actual_model_name,
-        max_seq_length=512,
+        max_seq_length=1024,
         dtype=None,
         load_in_4bit=False,
+        device_map={'': local_rank}
     )
     tokenizer = get_chat_template(tokenizer, chat_template="gemma3")
-    frames = [k for k in get_VA_arg_struct()]
-    add_new_tokens(model, tokenizer, new_tokens=frames + va_roles)
+    va_frames = [k for k in get_VA_arg_struct()]
+    add_new_tokens(model, tokenizer, new_tokens=va_frames + va_roles)
     # If evaluating a fine-tuned run, manually overlay your saved LoRA adapters now
     if not is_zero_shot:
         print(f"Loading LoRA adapters from {best_model_dir} onto expanded base model...")
         model.load_adapter(best_model_dir)
     # Enable Native 2x Faster Inference
     FastModel.for_inference(model)
-    accelerator = Accelerator()
     all_results = []
     test_langs = ['EN', 'ZH', 'ES', 'FR']
 
@@ -216,7 +222,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         with accelerator.split_between_processes(list(range(len(test_ds)))) as local_indices:
             local_preds = []
             local_labels = []
-            batch_size = 8
+            batch_size = 64
             terminators = [
                 tokenizer.eos_token_id,
                 tokenizer.convert_tokens_to_ids("<end_of_turn>")
@@ -229,7 +235,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                 batch_prompts = [test_ds[int(idx)]["prompt"] for idx in batch_idx]
                 batch_outputs = [test_ds[int(idx)]["output"] for idx in batch_idx]
 
-                inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=512,
+                inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=1024,
                                    add_special_tokens=False).to(model.device)
 
                 with torch.no_grad():
@@ -281,6 +287,12 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                 final_preds[idx, :len(p)] = p
                 final_labels[idx, :len(l)] = l
             metrics_dict = compute_metrics((final_preds, final_labels))
+            decoded_preds = tokenizer.batch_decode(all_preds, skip_special_tokens=True)
+            decoded_labels = tokenizer.batch_decode(all_labels, skip_special_tokens=True)
+            prediction_table = wandb.Table(columns=["Ground Truth (Target)", "Model Prediction"])
+            for gt, pred in zip(decoded_labels, decoded_preds):
+                prediction_table.add_data(gt, pred)
+            metrics_dict[f"predictions_table"] = prediction_table
             wandb.log(metrics_dict)
             row = {
                 "srl_type": srl_type,
