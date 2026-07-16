@@ -299,12 +299,6 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                 final_preds[idx, :len(p)] = p
                 final_labels[idx, :len(l)] = l
             metrics_dict = compute_metrics((final_preds, final_labels))
-            decoded_preds = tokenizer.batch_decode(all_preds, skip_special_tokens=True)
-            decoded_labels = tokenizer.batch_decode(all_labels, skip_special_tokens=True)
-            prediction_table = wandb.Table(columns=["Ground Truth (Target)", "Model Prediction"])
-            for gt, pred in zip(decoded_labels, decoded_preds):
-                prediction_table.add_data(gt, pred)
-            metrics_dict[f"predictions_table"] = prediction_table
             wandb.log(metrics_dict)
             row = {
                 "srl_type": srl_type,
