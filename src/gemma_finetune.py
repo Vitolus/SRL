@@ -81,7 +81,9 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         model,
         r=16,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        modules_to_save=["embed_tokens", "lm_head"],
         lora_alpha=32,
+        use_rslora=True,
         lora_dropout=0, # Unsloth optimizes dropout = 0
         bias="none",
         use_gradient_checkpointing="unsloth", # Unsloth's native VRAM saver
@@ -112,29 +114,32 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
 
     training_args = SFTConfig(
         output_dir=os.path.join(models_dir, f"{run_name}_checkpoints"),
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        per_device_train_batch_size=4,
+        eval_strategy="steps",
+        save_strategy="steps",
+        eval_steps=100,
+        save_steps=100,
+        per_device_train_batch_size=2,
         per_device_eval_batch_size=4,
         logging_dir="logs",
         report_to=["wandb"],
         run_name=run_name,
         learning_rate=1e-5,
         weight_decay=0.01,
-        num_train_epochs=2,
-        save_total_limit=1,
+        num_train_epochs=3,
+        save_total_limit=2,
         load_best_model_at_end=True,
         optim="adamw_8bit",
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=8,
         gradient_checkpointing=True,
         dataset_text_field="text",
         max_length=2048,
         packing=True,
         packing_strategy="bfd",
-        warmup_ratio=0.2,
+        warmup_ratio=0.1,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5,
-        ddp_find_unused_parameters=False
+        ddp_find_unused_parameters=False,
+        max_grad_norm=1.0
     )
 
     # SFTTrainer handles the causal LM masking and formatting automatically
@@ -228,7 +233,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         with accelerator.split_between_processes(list(range(len(test_ds)))) as local_indices:
             local_preds = []
             local_labels = []
-            batch_size = 32
+            batch_size = 24
             terminators = [
                 tokenizer.eos_token_id,
                 tokenizer.convert_tokens_to_ids("<end_of_turn>")
@@ -252,7 +257,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
                         do_sample=False, # Greedy decoding for structured tasks
                         pad_token_id=tokenizer.eos_token_id,
                         eos_token_id=terminators,
-                        repetition_penalty=1.15
+                        repetition_penalty=1.0
                     )
                 # Extract only the newly generated tokens
                 prompt_lengths = inputs["input_ids"].shape[1]
@@ -316,7 +321,8 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         df = pd.DataFrame(all_results)
         run_results_dir = os.path.join(results_dir, run_name)
         os.makedirs(run_results_dir, exist_ok=True)
-        results_path = os.path.join(run_results_dir, f"{run_name}_results.csv")
+        # TODO: remove "oneshot" if not using it in the prompt, also change the other names and prints to zeroshot
+        results_path = os.path.join(run_results_dir, f"{run_name}_oneshot_results.csv")
         df.to_csv(results_path, index=False)
         print(f"\nEvaluation completed. Results saved to {results_path}")
 
