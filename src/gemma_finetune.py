@@ -117,7 +117,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         save_strategy="steps",
         eval_steps=100,
         save_steps=100,
-        per_device_train_batch_size=2,
+        per_device_train_batch_size=4,
         per_device_eval_batch_size=4,
         logging_dir="logs",
         report_to=["wandb"],
@@ -137,7 +137,7 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         warmup_ratio=0.1,
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5,
-        ddp_find_unused_parameters=False,
+        ddp_find_unused_parameters=True,
         max_grad_norm=1.0
     )
 
