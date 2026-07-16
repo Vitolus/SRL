@@ -19,10 +19,7 @@ if 'src' not in sys.path:
 os.environ["WANDB_PROJECT"] = "gemma-srl-finetuning"
 
 
-def prompt_template(example, roles, frames, srl_type, lang_code="EN"):
-    # Retrieve the correct example, defaulting safely to English dependency if missing
-    task_examples = srl_examples_db.get(srl_type, srl_examples_db["dependency"])
-    ex_data = task_examples.get(lang_code, task_examples["EN"])
+def prompt_template(example, roles, frames, srl_type):
     if srl_type == "span":
         format_instructions = "2. Wrap the ENTIRE argument phrase in an XML tag: <Pi:ROLE>argument text</Pi:ROLE>."
     elif srl_type == "dependency":
@@ -41,22 +38,17 @@ def prompt_template(example, roles, frames, srl_type, lang_code="EN"):
         "3. The index prefix (P0, P1, etc.) must match exactly between a predicate and its arguments.\n"
         "4. The actual ROLE and FRAME must be uppercase and singular english, while the output sentence is in the same language of the input one.\n"
         "5. Output ONLY the final tagged sentence. Do not add any other text.\n\n"
-        "EXAMPLE INPUT:\n"
-        f"{ex_data['input']}\n"
-        "EXAMPLE OUTPUT:\n"
-        f"{ex_data['output']}\n\n"
-        "YOUR TURN:\n"
         f"INPUT SENTENCE:\n{example['input']}\n"
         "OUTPUT SENTENCE:"
     )
 
-def make_unsloth_chat_format(va_frames, srl_type, tokenizer, lang_code="EN"):
+def make_unsloth_chat_format(va_frames, srl_type, tokenizer):
     frames = ", ".join(va_frames)
     roles = ", ".join(va_roles)
     def formatter(example):
         # Convert text columns into standard Hugging Face conversation format
         messages = [
-            {"role": "user", "content": prompt_template(example, roles, frames, srl_type, lang_code)},
+            {"role": "user", "content": prompt_template(example, roles, frames, srl_type)},
             {"role": "model", "content": example['output']}
         ]
         # Compile it using the patched template string
@@ -207,9 +199,9 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
     all_results = []
     test_langs = ['EN', 'ZH', 'ES', 'FR']
 
-    def prepare_test_sample(example, test_lang):
+    def prepare_test_sample(example):
         # We handle zero-shot and finetuned identically via the model's native chat template configuration
-        messages = [{"role": "user", "content": prompt_template(example, ", ".join(va_roles), ", ".join(va_frames), srl_type, test_lang)}]
+        messages = [{"role": "user", "content": prompt_template(example, ", ".join(va_roles), ", ".join(va_frames), srl_type)}]
         templated_prompt = tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -228,7 +220,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         test_file = f"data/linearizations_{srl_type}_Test_{test_lang}.tsv"
         raw_test = load_dataset("csv", data_files={"test": test_file}, delimiter="\t")
         # We need sequential dataset access to properly write CoNLL files
-        test_ds = raw_test["test"].map(lambda x: prepare_test_sample(x, test_lang))
+        test_ds = raw_test["test"].map(lambda x: prepare_test_sample(x))
         with accelerator.split_between_processes(list(range(len(test_ds)))) as local_indices:
             local_preds = []
             local_labels = []
@@ -314,8 +306,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
         df = pd.DataFrame(all_results)
         run_results_dir = os.path.join(results_dir, run_name)
         os.makedirs(run_results_dir, exist_ok=True)
-        # TODO: remove "oneshot" if not using it in the prompt, also change the other names and prints to zeroshot
-        results_path = os.path.join(run_results_dir, f"{run_name}_oneshot_results.csv")
+        results_path = os.path.join(run_results_dir, f"{run_name}_results.csv")
         df.to_csv(results_path, index=False)
         print(f"\nEvaluation completed. Results saved to {results_path}")
 
@@ -340,49 +331,11 @@ if __name__ == '__main__':
         train_name = "_".join(args.langs)
     else:
         train_name = "zeroshot"
-    RUN_NAME = f"{args.srl_type}_{train_name}_gemma3_oneshot"
-    MODELS_DIR = "gemma3_oneshot_models/"
-    RESULTS_DIR = "results_oneshot/"
+    RUN_NAME = f"{args.srl_type}_{train_name}_gemma3"
+    MODELS_DIR = "gemma3_models/"
+    RESULTS_DIR = "results/"
     os.makedirs(MODELS_DIR, exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    srl_examples_db = {
-        "dependency": {
-            "EN": {
-                "input": "The director signed the contract, and the manager published the report.",
-                "output": "The <P0:AGENT> director </P0:AGENT> <P0:SIGN> signed </P0:SIGN> the <P0:THEME> contract </P0:THEME>, and the <P1:AGENT> manager </P1:AGENT> <P1:PUBLISH> published </P1:PUBLISH> the <P1:THEME> report </P1:THEME>."
-            },
-            "FR": {
-                "input": "Le directeur a signé le contrat, et le responsable a publié le rapport.",
-                "output": "Le <P0:AGENT> directeur </P0:AGENT> a <P0:SIGN> signé </P0:SIGN> le <P0:THEME> contrat </P0:THEME>, et le <P1:AGENT> responsable </P1:AGENT> a <P1:PUBLISH> publié </P1:PUBLISH> le <P1:THEME> rapport </P1:THEME>."
-            },
-            "ES": {
-                "input": "El director firmó el contrato, y el gerente publicó el informe.",
-                "output": "El <P0:AGENT> director </P0:AGENT> <P0:SIGN> firmó </P0:SIGN> el <P0:THEME> contrato </P0:THEME>, y el <P1:AGENT> gerente </P1:AGENT> <P1:PUBLISH> publicó </P1:PUBLISH> el <P1:THEME> informe </P1:THEME>."
-            },
-            "ZH": {
-                "input": "主管签署了合同，经理发布了报告。",
-                "output": "<P0:AGENT> 主管 </P0:AGENT> <P0:SIGN> 签署 </P0:SIGN> 了 <P0:THEME> 合同 </P0:THEME>，<P1:AGENT> 经理 </P1:AGENT> <P1:PUBLISH> 发布 </P1:PUBLISH> 了 <P1:THEME> 报告 </P1:THEME>。"
-            }
-        },
-        "span": {
-            "EN": {
-                "input": "The director signed the contract, and the manager published the report.",
-                "output": "<P0:AGENT> The director </P0:AGENT> <P0:SIGN> signed </P0:SIGN> <P0:THEME> the contract </P0:THEME>, and <P1:AGENT> the manager </P1:AGENT> <P1:PUBLISH> published </P1:PUBLISH> <P1:THEME> the report </P1:THEME>."
-            },
-            "FR": {
-                "input": "Le directeur a signé le contrat, et le responsable a publié le rapport.",
-                "output": "<P0:AGENT> Le directeur </P0:AGENT> a <P0:SIGN> signé </P0:SIGN> <P0:THEME> le contrat </P0:THEME>, et <P1:AGENT> le responsable </P1:AGENT> a <P1:PUBLISH> publié </P1:PUBLISH> <P1:THEME> le rapport </P1:THEME>."
-            },
-            "ES": {
-                "input": "El director firmó el contrato, y el gerente publicó el informe.",
-                "output": "<P0:AGENT> El director </P0:AGENT> <P0:SIGN> firmó </P0:SIGN> <P0:THEME> el contrato </P0:THEME>, y <P1:AGENT> el gerente </P1:AGENT> <P1:PUBLISH> publicó </P1:PUBLISH> <P1:THEME> el informe </P1:THEME>."
-            },
-            "ZH": {
-                "input": "主管签署了合同，经理发布了报告。",
-                "output": "<P0:AGENT> 主管 </P0:AGENT> <P0:SIGN> 签署 </P0:SIGN> 了 <P0:THEME> 合同 </P0:THEME>，<P1:AGENT> 经理 </P1:AGENT> <P1:PUBLISH> 发布 </P1:PUBLISH> 了 <P1:THEME> 报告 </P1:THEME>。"
-            }
-        }
-    }
     print(f"--- Starting Pipeline: {args.action.upper()} | {args.srl_type.upper()} SRL on {args.langs if args.langs else 'ZEROSHOT'} ---")
     if args.action == 'train':
         train(args.langs, args.srl_type, MODEL_NAME, RUN_NAME, MODELS_DIR)
