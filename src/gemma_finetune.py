@@ -79,10 +79,9 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     # Unsloth PEFT/LoRA Setup (Crucial for T4 FP16 stability)
     model = FastModel.get_peft_model(
         model,
-        r=16,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        modules_to_save=["embed_tokens", "lm_head"],
-        lora_alpha=32,
+        r=32,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"],
+        lora_alpha=64,
         use_rslora=True,
         lora_dropout=0, # Unsloth optimizes dropout = 0
         bias="none",
