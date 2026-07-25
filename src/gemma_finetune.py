@@ -86,16 +86,18 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
     for lang in train_langs:
         if "-s" in lang:
             base_lang = lang.replace("-s", "")
-            val_file = f"data/linearizations_{srl_type}_Val_{base_lang}.tsv"
-            if val_file not in loaded_files:
-                val_ds = load_dataset("csv", data_files={"val": val_file}, delimiter="\t")
-                val_datasets.append(val_ds["val"])
-                loaded_files.add(val_file)
-            data_file = f"data/linearizations_{srl_type}_FT_{base_lang}.tsv"
-            if data_file not in loaded_files:
-                train_ds = load_dataset("csv", data_files={"tune": data_file}, delimiter="\t")
-                train_datasets.append(train_ds["tune"])
-                loaded_files.add(data_file)
+        else:
+            base_lang = lang
+        val_file = f"data/linearizations_{srl_type}_Val_{base_lang}.tsv"
+        if val_file not in loaded_files:
+            val_ds = load_dataset("csv", data_files={"val": val_file}, delimiter="\t")
+            val_datasets.append(val_ds["val"])
+            loaded_files.add(val_file)
+        data_file = f"data/linearizations_{srl_type}_FT_{base_lang}.tsv"
+        if data_file not in loaded_files:
+            train_ds = load_dataset("csv", data_files={"tune": data_file}, delimiter="\t")
+            train_datasets.append(train_ds["tune"])
+            loaded_files.add(data_file)
     combined_train = concatenate_datasets(train_datasets).shuffle(seed=42)
     combined_val = concatenate_datasets(val_datasets)
     # Map into a standard "text" field containing the templated conversation
@@ -130,7 +132,8 @@ def train(train_langs, srl_type, model_name, run_name, models_dir):
         lr_scheduler_type="cosine",
         neftune_noise_alpha=5,
         ddp_find_unused_parameters=True,
-        max_grad_norm=1.0
+        max_grad_norm=1.0,
+        loss_type = 'nll'
     )
 
     # SFTTrainer handles the causal LM masking and formatting automatically
@@ -231,7 +234,7 @@ def evaluate(train_langs, srl_type, base_model_name, run_name, models_dir, resul
             ]
 
             # Each GPU generates ONLY its local slice of data
-            for i in tqdm(range(0, len(local_indices), batch_size), desc=f"Gen Rank {accelerator.process_index}",
+            for i in tqdm(1(0, len(local_indices), batch_size), desc=f"Gen Rank {accelerator.process_index}",
                           disable=not accelerator.is_main_process):
                 batch_idx = local_indices[i:i + batch_size]
                 batch_prompts = [test_ds[int(idx)]["prompt"] for idx in batch_idx]
